@@ -1,14 +1,15 @@
 #!/bin/bash
-# void-gnome-production.sh - Production-Grade Custom Void ISO Builder
+# void-gnome-production-final.sh - Bulletproof & Idempotent Custom Void ISO Builder
 
 set -euo pipefail
 
-# Define the central working directory
-WORKDIR="/home/void-iso"
+# --- CONFIGURATION ---
+WORKDIR="$HOME/void-iso"
+# Reproducibility Lock: Pin to a known-good commit to prevent upstream breaks
+VOID_MKLIVE_COMMIT="ca771eb"
+# ---------------------
 
 echo "==> [0/5] Running Preflight Host Checks..."
-
-# Required host tools (including gzip and bzip2 for rootfs archives)
 REQUIRED_CMDS="git make curl tar xz sudo gzip bzip2"
 MISSING_CMDS=""
 
@@ -24,8 +25,7 @@ if [ -n "$MISSING_CMDS" ]; then
     
     if command -v apt-get &> /dev/null; then
         APT_PKGS=${MISSING_CMDS//xz/xz-utils}
-        sudo apt-get update
-        sudo apt-get install -y $APT_PKGS
+        sudo apt-get update && sudo apt-get install -y $APT_PKGS
     elif command -v pacman &> /dev/null; then
         sudo pacman -Sy --noconfirm $MISSING_CMDS
     elif command -v dnf &> /dev/null; then
@@ -45,23 +45,36 @@ else
 fi
 
 echo "==> [1/5] Setting up workspace at $WORKDIR..."
-# Create the directory and ensure the current user owns it to prevent 'make' permission errors
-sudo mkdir -p "$WORKDIR"
+mkdir -p "$WORKDIR"
 sudo chown "$USER":"$USER" "$WORKDIR"
 cd "$WORKDIR"
 
-# Clone the repository into our dedicated workspace
+# Idempotent Git Setup
 if [ ! -d "void-mklive" ]; then
+    echo "    Cloning repository..."
     git clone https://github.com/void-linux/void-mklive.git
 fi
 cd void-mklive
 
-# Compile static xbps binaries
+echo "    Locking void-mklive toolchain to commit: $VOID_MKLIVE_COMMIT"
+git fetch --depth 1 origin "$VOID_MKLIVE_COMMIT" || {
+    echo "    [!] Error: Failed to fetch pinned commit ($VOID_MKLIVE_COMMIT)."
+    echo "    The upstream repository history may have been rewritten. Aborting build."
+    exit 1
+}
+
+# Ensure pristine state: Hard reset to commit and nuke all leftover untracked/build files
+git reset --hard "$VOID_MKLIVE_COMMIT"
+git clean -fdx
+
+# Compile xbps tools from a guaranteed clean state
 make 
 
-echo "==> [2/5] Setting up GNOME Wayland/Autologin overlay..."
-rm -rf custom-overlay
+echo "==> [2/5] Setting up GNOME Wayland/Autologin & Installer overlay..."
+# (Note: custom-overlay was safely wiped by git clean -fdx, so we recreate it cleanly)
 mkdir -p custom-overlay/etc/gdm
+mkdir -p custom-overlay/usr/sbin
+
 cat <<EOF > custom-overlay/etc/gdm/custom.conf
 [daemon]
 AutomaticLoginEnable=True
@@ -69,28 +82,35 @@ AutomaticLogin=anon
 WaylandEnable=true
 EOF
 
+# Defensive check for the installer script before copying
+if [ ! -f installer.sh ]; then
+    echo "    [!] Error: installer.sh not found in the void-mklive repository!"
+    echo "    The upstream repository may have changed. Aborting build to prevent a broken ISO."
+    exit 1
+fi
+cp installer.sh custom-overlay/usr/sbin/void-installer
+chmod +x custom-overlay/usr/sbin/void-installer
+
 echo "==> [3/5] Defining finalized package list..."
 
-# Desktop & GUI Apps (NetworkManager binary is pulled via -S flag)
-APPS="gnome-core gnome-terminal chromium network-manager-applet elogind xdg-user-dirs xdg-utils void-installer dialog"
+# Desktop & GUI Apps
+APPS="gnome-core gnome-terminal chromium NetworkManager network-manager-applet elogind xdg-user-dirs xdg-utils dialog"
 
-# Virtualization Support (Guest agents for QEMU/KVM/Libvirt)
-VIRT="qemu-ga-files spice-vdagent"
+# Virtualization Support
+VIRT="qemu-ga spice-vdagent"
 
-# Usability, Fallback Networking & Bootloading
-UTILS="dhcpcd iproute2 bash-completion nano htop wget curl grub-x86_64-efi os-prober"
+# Usability, Bootloading & Installer Filesystem Tools
+UTILS="dhcpcd iproute2 bash-completion nano htop wget curl grub-x86_64-efi os-prober cryptsetup lvm2 mdadm btrfs-progs xfsprogs dosfstools e2fsprogs"
 
 # Firmware (Free & Non-Free)
 FIRMWARE="linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel linux-firmware-nvidia intel-ucode amd-ucode"
 
-# Graphics & Vulkan (Mainline Wayland approach)
+# Graphics & Vulkan
 DRIVERS="mesa mesa-dri mesa-vulkan-radeon mesa-vulkan-intel vulkan-loader void-repo-nonfree"
 
 ALL_PKGS="$APPS $VIRT $UTILS $FIRMWARE $DRIVERS"
 
 echo "==> [4/5] Baking the ISO..."
-
-# Execute the build process
 sudo ./mklive.sh \
     -a x86_64 \
     -o void-custom-gnome-production.iso \
@@ -103,4 +123,3 @@ sudo ./mklive.sh \
 
 echo "==> [5/5] SUCCESS!"
 echo "    Your ISO is located at: $WORKDIR/void-mklive/void-custom-gnome-production.iso"
-echo "    All temporary build files are safely contained within: $WORKDIR"
