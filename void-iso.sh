@@ -9,9 +9,6 @@ ACTUAL_USER="${SUDO_USER:-$USER}"
 ACTUAL_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 
 WORKDIR="$ACTUAL_HOME/void-iso"
-
-# Reproducibility Lock: Full 40-character commit hash for absolute reliability
-VOID_MKLIVE_COMMIT="ca771eb7910e53a992d9bc9b1dff32338eb20ef8"
 # ---------------------
 
 echo "==> [0/5] Running Preflight Host Checks..."
@@ -57,15 +54,15 @@ cd "$WORKDIR"
 # Idempotent Git Setup
 if [ ! -d "void-mklive" ]; then
     echo "    Cloning repository..."
-    # Clone normally without --no-checkout to ensure the .git folder is fully populated
     sudo -u "$ACTUAL_USER" git clone https://github.com/void-linux/void-mklive.git
 fi
 cd void-mklive
 
-echo "    Locking void-mklive toolchain to commit: ${VOID_MKLIVE_COMMIT:0:7}"
-# Fetch all standard branches, then hard reset to our specific full-length commit hash
+echo "    Syncing toolchain to the latest stable master branch..."
+# Fetch the latest upstream changes and force our local folder to match them perfectly
 sudo -u "$ACTUAL_USER" git fetch origin
-sudo -u "$ACTUAL_USER" git reset --hard "$VOID_MKLIVE_COMMIT"
+sudo -u "$ACTUAL_USER" git reset --hard origin/master
+# Nuke any untracked or partially built files from previous failed runs
 sudo -u "$ACTUAL_USER" git clean -fdx
 
 # Compile xbps tools from a guaranteed clean state (must be run as root/sudo for mklive)
