@@ -1,12 +1,17 @@
 #!/bin/bash
-# void-gnome-production-final.sh - Bulletproof & Idempotent Custom Void ISO Builder
+# void-gnome-production-final.sh - Bulletproof Custom Void ISO Builder
 
 set -euo pipefail
 
 # --- CONFIGURATION ---
-WORKDIR="$HOME/void-iso"
-# Reproducibility Lock: Pin to a known-good commit to prevent upstream breaks
-VOID_MKLIVE_COMMIT="ca771eb"
+# Detect the actual user running the script, even if executed with sudo
+ACTUAL_USER="${SUDO_USER:-$USER}"
+ACTUAL_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
+
+WORKDIR="$ACTUAL_HOME/void-iso"
+
+# Reproducibility Lock: Full 40-character commit hash for absolute reliability
+VOID_MKLIVE_COMMIT="ca771eb7910e53a992d9bc9b1dff32338eb20ef8"
 # ---------------------
 
 echo "==> [0/5] Running Preflight Host Checks..."
@@ -45,33 +50,29 @@ else
 fi
 
 echo "==> [1/5] Setting up workspace at $WORKDIR..."
-mkdir -p "$WORKDIR"
-sudo chown "$USER":"$USER" "$WORKDIR"
+# Run mkdir as the actual user to prevent root-ownership lockouts later
+sudo -u "$ACTUAL_USER" mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
 # Idempotent Git Setup
 if [ ! -d "void-mklive" ]; then
     echo "    Cloning repository..."
-    git clone https://github.com/void-linux/void-mklive.git
+    # Clone normally without --no-checkout to ensure the .git folder is fully populated
+    sudo -u "$ACTUAL_USER" git clone https://github.com/void-linux/void-mklive.git
 fi
 cd void-mklive
 
-echo "    Locking void-mklive toolchain to commit: $VOID_MKLIVE_COMMIT"
-git fetch --depth 1 origin "$VOID_MKLIVE_COMMIT" || {
-    echo "    [!] Error: Failed to fetch pinned commit ($VOID_MKLIVE_COMMIT)."
-    echo "    The upstream repository history may have been rewritten. Aborting build."
-    exit 1
-}
+echo "    Locking void-mklive toolchain to commit: ${VOID_MKLIVE_COMMIT:0:7}"
+# Fetch all standard branches, then hard reset to our specific full-length commit hash
+sudo -u "$ACTUAL_USER" git fetch origin
+sudo -u "$ACTUAL_USER" git reset --hard "$VOID_MKLIVE_COMMIT"
+sudo -u "$ACTUAL_USER" git clean -fdx
 
-# Ensure pristine state: Hard reset to commit and nuke all leftover untracked/build files
-git reset --hard "$VOID_MKLIVE_COMMIT"
-git clean -fdx
-
-# Compile xbps tools from a guaranteed clean state
+# Compile xbps tools from a guaranteed clean state (must be run as root/sudo for mklive)
 make 
 
 echo "==> [2/5] Setting up GNOME Wayland/Autologin & Installer overlay..."
-# (Note: custom-overlay was safely wiped by git clean -fdx, so we recreate it cleanly)
+rm -rf custom-overlay
 mkdir -p custom-overlay/etc/gdm
 mkdir -p custom-overlay/usr/sbin
 
@@ -82,7 +83,6 @@ AutomaticLogin=anon
 WaylandEnable=true
 EOF
 
-# Defensive check for the installer script before copying
 if [ ! -f installer.sh ]; then
     echo "    [!] Error: installer.sh not found in the void-mklive repository!"
     echo "    The upstream repository may have changed. Aborting build to prevent a broken ISO."
