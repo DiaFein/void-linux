@@ -7,8 +7,6 @@ set -euo pipefail
 ACTUAL_USER="${SUDO_USER:-$USER}"
 ACTUAL_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 WORKDIR="$ACTUAL_HOME/void-iso"
-
-# Toggle this to 'false' if you want to force the default mirror
 USE_FASTEST_MIRROR="true"
 # ---------------------
 
@@ -70,7 +68,6 @@ if [ "$USE_FASTEST_MIRROR" = "true" ]; then
     echo "    Pinging Tier 1 mirrors to find the fastest response time..."
     BEST_TIME=999
     
-    # Standard Tier 1 Global Mirrors
     MIRRORS=(
         "https://repo-default.voidlinux.org"
         "https://repo-fi.voidlinux.org"
@@ -80,8 +77,6 @@ if [ "$USE_FASTEST_MIRROR" = "true" ]; then
     )
 
     for m in "${MIRRORS[@]}"; do
-        # Enforce C locale to ensure curl outputs decimal dots (not commas) for awk comparison
-        # Use a 2-second timeout (-m 2) so dead mirrors don't hang the script
         TEST_TIME=$(LC_NUMERIC=C curl -s -o /dev/null -w "%{time_total}" -m 2 "$m/current/x86_64-repodata" || echo "999")
         
         if awk "BEGIN {exit !($TEST_TIME < $BEST_TIME)}"; then
@@ -123,21 +118,26 @@ DRIVERS="mesa mesa-dri mesa-vulkan-radeon mesa-vulkan-intel vulkan-loader void-r
 ALL_PKGS="$APPS $VIRT $UTILS $FIRMWARE $DRIVERS"
 
 echo "==> [5/6] Validating package list against $REPO_URL..."
-XBPS_BIN_DIR=$(find "$PWD" -type d -name "bin" | grep "xbps" | head -n 1 || true)
-if [ -n "$XBPS_BIN_DIR" ]; then
-    export PATH="$XBPS_BIN_DIR:$PATH"
-fi
 
-if command -v xbps-install >/dev/null 2>&1; then
+# Find the exact path to the package manager so sudo doesn't lose it
+XBPS_CMD=$(command -v xbps-install || echo "$PWD/xbps-static/usr/bin/xbps-install")
+
+if [ -f "$XBPS_CMD" ] || command -v xbps-install >/dev/null 2>&1; then
     DUMMY_ROOT=$(mktemp -d)
     
-    sudo xbps-install -S -r "$DUMMY_ROOT" \
+    # FIX: Inject Void Linux RSA keys into the dummy root so it trusts the mirror
+    sudo mkdir -p "$DUMMY_ROOT/var/db/xbps/keys"
+    sudo cp keys/* "$DUMMY_ROOT/var/db/xbps/keys/"
+    
+    echo "    Syncing repository indices for dry-run verification..."
+    # FIX: Force XBPS_ARCH so it doesn't fail on mismatched host systems
+    sudo env XBPS_ARCH=x86_64 "$XBPS_CMD" -S -r "$DUMMY_ROOT" \
         --repository="$REPO_URL/current" \
-        --repository="$REPO_URL/current/nonfree" > /dev/null 2>&1 || true
+        --repository="$REPO_URL/current/nonfree" > /dev/null
 
     MISSING_PKGS=""
     for pkg in $ALL_PKGS; do
-        if ! sudo xbps-install -n -r "$DUMMY_ROOT" \
+        if ! sudo env XBPS_ARCH=x86_64 "$XBPS_CMD" -n -r "$DUMMY_ROOT" \
             --repository="$REPO_URL/current" \
             --repository="$REPO_URL/current/nonfree" \
             "$pkg" > /dev/null 2>&1; then
@@ -152,7 +152,7 @@ if command -v xbps-install >/dev/null 2>&1; then
         for missing in $MISSING_PKGS; do
             echo "        -> $missing"
         done
-        echo "    Aborting build."
+        echo "    Aborting build. Please fix your package list."
         exit 1
     else
         echo "    [+] All packages verified successfully!"
