@@ -54,6 +54,10 @@ if [ ! -d "void-mklive" ]; then
 fi
 cd void-mklive
 
+echo "    Cleaning up root-owned build artifacts from previous runs..."
+# FIX: Use the script's sudo power to wipe root-owned directories before the user-level git clean
+rm -rf custom-overlay xbps-cachedir-* builddir *.iso
+
 echo "    Syncing toolchain to the latest stable master branch..."
 sudo -u "$ACTUAL_USER" git fetch origin
 sudo -u "$ACTUAL_USER" git reset --hard origin/master
@@ -92,8 +96,6 @@ fi
 echo "==> [3/6] Setting up GNOME Wayland/Autologin & Installer overlay..."
 rm -rf custom-overlay
 mkdir -p custom-overlay/etc/gdm
-
-# FIX: Changed from usr/sbin to usr/bin to prevent symlink collisions during ISO generation
 mkdir -p custom-overlay/usr/bin
 
 cat <<EOF > custom-overlay/etc/gdm/custom.conf
@@ -107,8 +109,6 @@ if [ ! -f installer.sh ]; then
     echo "    [!] Error: installer.sh not found in the void-mklive repository!"
     exit 1
 fi
-
-# FIX: Installer is now copied to the definitive binary folder
 cp installer.sh custom-overlay/usr/bin/void-installer
 chmod +x custom-overlay/usr/bin/void-installer
 
