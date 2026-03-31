@@ -3,26 +3,26 @@
 
 set -euo pipefail
 
+# Define the central working directory
+WORKDIR="/home/void-iso"
+
 echo "==> [0/5] Running Preflight Host Checks..."
 
-# Added gzip and bzip2 to ensure complete archive toolchain
+# Required host tools (including gzip and bzip2 for rootfs archives)
 REQUIRED_CMDS="git make curl tar xz sudo gzip bzip2"
 MISSING_CMDS=""
 
-# Check which commands are missing
 for cmd in $REQUIRED_CMDS; do
     if ! command -v "$cmd" &> /dev/null; then
         MISSING_CMDS="$MISSING_CMDS $cmd"
     fi
 done
 
-# If anything is missing, detect the package manager and install it
 if [ -n "$MISSING_CMDS" ]; then
     echo "    Missing required host tools:$MISSING_CMDS"
     echo "    Attempting to install missing packages automatically..."
     
     if command -v apt-get &> /dev/null; then
-        # Debian/Ubuntu uses 'xz-utils' instead of 'xz'
         APT_PKGS=${MISSING_CMDS//xz/xz-utils}
         sudo apt-get update
         sudo apt-get install -y $APT_PKGS
@@ -44,13 +44,19 @@ else
     echo "    All host dependencies are present. Proceeding..."
 fi
 
-echo "==> [1/5] Preparing void-mklive..."
+echo "==> [1/5] Setting up workspace at $WORKDIR..."
+# Create the directory and ensure the current user owns it to prevent 'make' permission errors
+sudo mkdir -p "$WORKDIR"
+sudo chown "$USER":"$USER" "$WORKDIR"
+cd "$WORKDIR"
+
+# Clone the repository into our dedicated workspace
 if [ ! -d "void-mklive" ]; then
     git clone https://github.com/void-linux/void-mklive.git
 fi
 cd void-mklive
 
-# Compiles static xbps binaries needed to build the ISO
+# Compile static xbps binaries
 make 
 
 echo "==> [2/5] Setting up GNOME Wayland/Autologin overlay..."
@@ -65,8 +71,7 @@ EOF
 
 echo "==> [3/5] Defining finalized package list..."
 
-# Desktop & GUI Apps
-# Removed NetworkManager from here as it is pulled via the -S flag
+# Desktop & GUI Apps (NetworkManager binary is pulled via -S flag)
 APPS="gnome-core gnome-terminal chromium network-manager-applet elogind xdg-user-dirs xdg-utils void-installer dialog"
 
 # Virtualization Support (Guest agents for QEMU/KVM/Libvirt)
@@ -85,8 +90,7 @@ ALL_PKGS="$APPS $VIRT $UTILS $FIRMWARE $DRIVERS"
 
 echo "==> [4/5] Baking the ISO..."
 
-# Build Parameters:
-# NetworkManager is explicitly enabled and installed via -S
+# Execute the build process
 sudo ./mklive.sh \
     -a x86_64 \
     -o void-custom-gnome-production.iso \
@@ -97,4 +101,6 @@ sudo ./mklive.sh \
     -r https://repo-default.voidlinux.org/current/nonfree \
     -I custom-overlay
 
-echo "==> [5/5] SUCCESS! ISO located at: $(pwd)/void-custom-gnome-production.iso"
+echo "==> [5/5] SUCCESS!"
+echo "    Your ISO is located at: $WORKDIR/void-mklive/void-custom-gnome-production.iso"
+echo "    All temporary build files are safely contained within: $WORKDIR"
