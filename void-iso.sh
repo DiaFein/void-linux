@@ -7,10 +7,13 @@ set -euo pipefail
 ACTUAL_USER="${SUDO_USER:-$USER}"
 ACTUAL_HOME=$(getent passwd "$ACTUAL_USER" | cut -d: -f6)
 WORKDIR="$ACTUAL_HOME/void-iso"
+
+# Toggle this to 'false' if you want to force the default mirror
+USE_FASTEST_MIRROR="true"
 # ---------------------
 
 echo "==> [0/6] Running Preflight Host Checks..."
-REQUIRED_CMDS="git make curl tar xz sudo gzip bzip2"
+REQUIRED_CMDS="git make curl tar xz sudo gzip bzip2 awk"
 MISSING_CMDS=""
 
 for cmd in $REQUIRED_CMDS; do
@@ -60,7 +63,38 @@ sudo -u "$ACTUAL_USER" git clean -fdx
 
 make 
 
-echo "==> [2/6] Setting up GNOME Wayland/Autologin & Installer overlay..."
+echo "==> [2/6] Selecting Void Linux Repository Mirror..."
+REPO_URL="https://repo-default.voidlinux.org"
+
+if [ "$USE_FASTEST_MIRROR" = "true" ]; then
+    echo "    Pinging Tier 1 mirrors to find the fastest response time..."
+    BEST_TIME=999
+    
+    # Standard Tier 1 Global Mirrors
+    MIRRORS=(
+        "https://repo-default.voidlinux.org"
+        "https://repo-fi.voidlinux.org"
+        "https://repo-us.voidlinux.org"
+        "https://repo-fastly.voidlinux.org"
+        "https://mirrors.servercentral.com/voidlinux"
+    )
+
+    for m in "${MIRRORS[@]}"; do
+        # Enforce C locale to ensure curl outputs decimal dots (not commas) for awk comparison
+        # Use a 2-second timeout (-m 2) so dead mirrors don't hang the script
+        TEST_TIME=$(LC_NUMERIC=C curl -s -o /dev/null -w "%{time_total}" -m 2 "$m/current/x86_64-repodata" || echo "999")
+        
+        if awk "BEGIN {exit !($TEST_TIME < $BEST_TIME)}"; then
+            BEST_TIME=$TEST_TIME
+            REPO_URL=$m
+        fi
+    done
+    echo "    [+] Selected Mirror: $REPO_URL (Response time: ${BEST_TIME}s)"
+else
+    echo "    Using default mirror: $REPO_URL"
+fi
+
+echo "==> [3/6] Setting up GNOME Wayland/Autologin & Installer overlay..."
 rm -rf custom-overlay
 mkdir -p custom-overlay/etc/gdm
 mkdir -p custom-overlay/usr/sbin
@@ -79,18 +113,16 @@ fi
 cp installer.sh custom-overlay/usr/sbin/void-installer
 chmod +x custom-overlay/usr/sbin/void-installer
 
-echo "==> [3/6] Defining finalized package list..."
+echo "==> [4/6] Defining finalized package list..."
 APPS="gnome-core gnome-terminal chromium NetworkManager network-manager-applet elogind xdg-user-dirs xdg-utils dialog"
 VIRT="qemu-ga spice-vdagent"
 UTILS="dhcpcd iproute2 bash-completion nano htop wget curl grub-x86_64-efi os-prober cryptsetup lvm2 mdadm btrfs-progs xfsprogs dosfstools e2fsprogs"
-# amd-ucode removed intentionally
 FIRMWARE="linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel linux-firmware-nvidia intel-ucode"
 DRIVERS="mesa mesa-dri mesa-vulkan-radeon mesa-vulkan-intel vulkan-loader void-repo-nonfree"
 
 ALL_PKGS="$APPS $VIRT $UTILS $FIRMWARE $DRIVERS"
 
-echo "==> [4/6] Validating package list against Void repositories..."
-# Find the static xbps binaries downloaded by `make` and temporarily add them to our PATH
+echo "==> [5/6] Validating package list against $REPO_URL..."
 XBPS_BIN_DIR=$(find "$PWD" -type d -name "bin" | grep "xbps" | head -n 1 || true)
 if [ -n "$XBPS_BIN_DIR" ]; then
     export PATH="$XBPS_BIN_DIR:$PATH"
@@ -98,19 +130,16 @@ fi
 
 if command -v xbps-install >/dev/null 2>&1; then
     DUMMY_ROOT=$(mktemp -d)
-    echo "    Syncing repository indices for dry-run verification..."
     
-    # Sync the repository keys/indexes to our dummy folder
     sudo xbps-install -S -r "$DUMMY_ROOT" \
-        --repository=https://repo-default.voidlinux.org/current \
-        --repository=https://repo-default.voidlinux.org/current/nonfree > /dev/null 2>&1 || true
+        --repository="$REPO_URL/current" \
+        --repository="$REPO_URL/current/nonfree" > /dev/null 2>&1 || true
 
-    # Test each package individually to provide pinpoint error messages
     MISSING_PKGS=""
     for pkg in $ALL_PKGS; do
         if ! sudo xbps-install -n -r "$DUMMY_ROOT" \
-            --repository=https://repo-default.voidlinux.org/current \
-            --repository=https://repo-default.voidlinux.org/current/nonfree \
+            --repository="$REPO_URL/current" \
+            --repository="$REPO_URL/current/nonfree" \
             "$pkg" > /dev/null 2>&1; then
             MISSING_PKGS="$MISSING_PKGS $pkg"
         fi
@@ -119,29 +148,29 @@ if command -v xbps-install >/dev/null 2>&1; then
     sudo rm -rf "$DUMMY_ROOT"
     
     if [ -n "$MISSING_PKGS" ]; then
-        echo "    [!] CRITICAL ERROR: The following packages do NOT exist in the Void repositories:"
+        echo "    [!] CRITICAL ERROR: The following packages do NOT exist:"
         for missing in $MISSING_PKGS; do
             echo "        -> $missing"
         done
-        echo "    Aborting build. Please fix your package list and run the script again."
+        echo "    Aborting build."
         exit 1
     else
-        echo "    All packages verified successfully! They exist."
+        echo "    [+] All packages verified successfully!"
     fi
 else
     echo "    [?] Could not locate xbps-install. Skipping package validation."
 fi
 
-echo "==> [5/6] Baking the ISO..."
+echo "==> [6/6] Baking the ISO..."
 sudo ./mklive.sh \
     -a x86_64 \
     -o void-custom-gnome-production.iso \
     -v linux-mainline \
     -S "dbus elogind NetworkManager gdm qemu-ga" \
     -p "$ALL_PKGS" \
-    -r https://repo-default.voidlinux.org/current \
-    -r https://repo-default.voidlinux.org/current/nonfree \
+    -r "$REPO_URL/current" \
+    -r "$REPO_URL/current/nonfree" \
     -I custom-overlay
 
-echo "==> [6/6] SUCCESS!"
+echo "==> SUCCESS!"
 echo "    Your ISO is located at: $WORKDIR/void-mklive/void-custom-gnome-production.iso"
