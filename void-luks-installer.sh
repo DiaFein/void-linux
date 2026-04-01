@@ -131,7 +131,6 @@ SWAP_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/swap)
 CRYPT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
 
 UCODE=""
-grep -q "AuthenticAMD" /proc/cpuinfo && UCODE="amd-ucode"
 grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
 
 echo "XBPS_FETCH_OPTIONS=\"--parallel=5\"" > /mnt/etc/xbps.d/00-fetch.conf
