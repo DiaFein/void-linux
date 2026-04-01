@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# VOID LINUX PRODUCTION ISO BUILDER (GOLD MASTER V2)
+# VOID LINUX PRODUCTION ISO BUILDER (ELITE MASTER)
 # Target: Custom GNOME ISO with High-Performance Trading Installer
-# Fixes: Reordered Live-CD cleanup to prevent /etc/shadow password wiping
+# Final Polish: Pre-package mount binds, GRUB safeguards, robust network tests
 # ==============================================================================
 
 set -euo pipefail
@@ -153,7 +153,7 @@ EOF_LAUNCHER
 chmod +x custom-overlay/usr/bin/void-setup
 
 # 5. The High-Performance Deployer
-echo "    [+] Injecting Custom Trading Installer (Gold Master V2)..."
+echo "    [+] Injecting Custom Trading Installer (Elite Master)..."
 cat << 'EOF_TRADER' > custom-overlay/usr/bin/void-trading-install
 #!/bin/bash
 set -euo pipefail
@@ -164,7 +164,7 @@ exec 2>&1
 
 clear
 echo "======================================================================"
-echo "      VOID HIGH-PERFORMANCE DEPLOYMENT (GOLD MASTER)                  "
+echo "      VOID HIGH-PERFORMANCE DEPLOYMENT (ELITE MASTER)                 "
 echo "======================================================================"
 
 echo -e "\n[*] Available Storage Devices:"
@@ -254,19 +254,33 @@ echo "ignorepkg=linux-headers" >> /mnt/etc/xbps.d/10-ignore.conf
 
 if [ "$INSTALL_SOURCE" = "1" ] && [ -d "/repo" ]; then
     echo "[*] Cloning RootFS (Lightning Mode)..."
-    tar -cpf - -C / bin etc home lib lib32 lib64 opt root sbin usr var | tar -xpf - -C /mnt
+    DIRS=""
+    for d in bin etc home lib lib32 lib64 opt root sbin usr var; do
+        [ -e "/$d" ] && DIRS="$DIRS $d"
+    done
+    tar -cpf - -C / $DIRS | tar -xpf - -C /mnt
     tar -cpf - -C /boot . | tar -xpf - -C /mnt/boot
-    mkdir -p /mnt/{dev,proc,sys,tmp,run,mnt,media}; chmod 1777 /mnt/tmp
     REPO_FLAGS="-i -R /repo"
 else
     echo "[*] Network Install Mode..."
     echo "[*] Verifying network connectivity..."
-    if ! ping -c 2 8.8.8.8 >/dev/null 2>&1; then
+    
+    # CRITICAL FIX 2: Elite Level Network Check
+    if ! ping -c 1 google.com >/dev/null 2>&1 && ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
         echo "[!] CRITICAL: No internet connection detected."
         exit 1
     fi
     REPO_FLAGS="-R __REPO_URL__/current -R __REPO_URL__/current/nonfree"
 fi
+
+# CRITICAL FIX 1: Staging virtual filesystems and resolving networking BEFORE xbps-install
+echo "[*] Staging virtual filesystems to prevent dracut errors..."
+mkdir -p /mnt/{dev,proc,sys,tmp,run,mnt,media}
+chmod 1777 /mnt/tmp
+mount --rbind /dev /mnt/dev
+mount --rbind /proc /mnt/proc
+mount --rbind /sys /mnt/sys
+cp /etc/resolv.conf /mnt/etc/resolv.conf
 
 cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
 
@@ -276,9 +290,6 @@ xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt \
     linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
     gnome-core gnome-terminal nano mousepad chromium gdm dbus elogind NetworkManager \
     ethtool pciutils zramen irqbalance lm_sensors cpupower dconf haveged preload parted
-
-mount --rbind /dev /mnt/dev; mount --rbind /proc /mnt/proc; mount --rbind /sys /mnt/sys
-cp /etc/resolv.conf /mnt/etc/resolv.conf
 
 echo "[*] Entering secured chroot environment..."
 chroot /mnt /usr/bin/env HOST_NAME="$HOST_NAME" CRYPT_UUID="$CRYPT_UUID" CRYPT_OPTS="$CRYPT_OPTS" \
@@ -314,7 +325,6 @@ Section "InputClass"
 EndSection
 XKB
 
-# === CRITICAL PASSWORD & USER FIX ===
 # Nuke the Live ISO packages FIRST so they don't overwrite our shadow files
 if [ "$INSTALL_SOURCE" = "1" ]; then
     xbps-remove -Ry void-live >/dev/null 2>&1 || true
@@ -330,9 +340,12 @@ useradd -m -G wheel,audio,video,input -s /bin/bash "$SYS_USER"
 echo "$SYS_USER:$SYS_PASS" | chpasswd -c SHA512
 echo "root:$SYS_PASS" | chpasswd -c SHA512
 sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
-# =====================================
 
 # Kernel & Boot
+# CRITICAL FIX 3: GRUB Safeguard
+[ -f /etc/default/grub ] || touch /etc/default/grub
+grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub || echo 'GRUB_CMDLINE_LINUX_DEFAULT=""' >> /etc/default/grub
+
 sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="amd_pstate=active audit=0 nowatchdog nmi_watchdog=0 rcu_nocbs=all quiet loglevel=3 /' /etc/default/grub
 echo 'add_dracutmodules+=" crypt lvm "' > /etc/dracut.conf.d/crypt.conf
 echo 'hostonly="yes"' > /etc/dracut.conf.d/hostonly.conf
