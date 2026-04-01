@@ -256,6 +256,7 @@ fi
 grub-mkconfig -o /boot/grub/grub.cfg
 
 # --- D. Network & Latency Optimization ---
+mkdir -p /etc/sysctl.d   # <--- ADD THIS LINE
 cat <<SYSCTL > /etc/sysctl.d/99-trading-ultra.conf
 kernel.timer_migration=0
 kernel.sched_wakeup_granularity_ns=1500000
@@ -270,8 +271,10 @@ net.core.busy_read=50
 net.core.busy_poll=50
 SYSCTL
 
+mkdir -p /etc/modules-load.d   # <--- ADD THIS LINE
 echo "tcp_bbr" > /etc/modules-load.d/bbr.conf
 
+mkdir -p /etc/security/limits.d   # <--- ADD THIS LINE
 cat <<LIMITS > /etc/security/limits.d/99-trading-limits.conf
 * soft nofile 500000
 * hard nofile 1048576
