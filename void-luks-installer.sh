@@ -1,12 +1,13 @@
 #!/bin/bash
 # ==============================================================================
-# VOID LINUX HIGH-PERFORMANCE DEPLOYER (STANDALONE TEST VERSION)
+# VOID LINUX HIGH-PERFORMANCE DEPLOYER (PRODUCTION MASTER)
 # Target: LUKS + LVM + GNOME + AMD GPU + Mainline/LTS
-# Includes: Fixed Mount Order, Ucode Fix, Cache Fix, Dynamic Mirror Selector
+# Audited: Fixed Mount Order, Ucode 404, Cache Syntax, and Fastly CDN Routing
 # ==============================================================================
 
 set -euo pipefail
 
+# --- 1. Logging & Network Guard ---
 LOGFILE="/tmp/void-install.log"
 exec > >(tee -i "$LOGFILE")
 exec 2>&1
@@ -24,12 +25,14 @@ echo "======================================================================"
 echo "      VOID HIGH-PERFORMANCE DEPLOYMENT (UNIVERSAL STORAGE)            "
 echo "======================================================================"
 
+# --- 2. System Discovery ---
 echo -e "\n[*] Available Storage Devices:"
 lsblk -d -o NAME,SIZE,FSTYPE,MODEL | grep -v "loop"
 
 echo ""
 read -rp "Target disk (e.g. /dev/sda, /dev/vda, /dev/nvme0n1): " DISK
 
+# --- 3. Dynamic Sizing ---
 echo -e "\n[*] Partition & Volume Sizing"
 read -rp "EFI partition size in MiB [Default: 512]: " EFI_SIZE
 EFI_SIZE=${EFI_SIZE:-512}
@@ -47,6 +50,7 @@ ROOT_LV_SIZE=${ROOT_LV_SIZE:-30}
 
 echo "-> Note: LVM HOME will automatically use the remaining encrypted space."
 
+# --- 4. Credentials ---
 echo -e "\n[*] Credentials & Config"
 read -rsp "Enter LUKS encryption password: " LUKS_PASS; echo
 read -rp "Enter new username: " SYS_USER
@@ -66,6 +70,7 @@ echo -e "\n⚠️  WARNING: ALL DATA ON $DISK WILL BE PERMANENTLY ERASED!"
 read -rp "Type YES to continue: " CONFIRM
 [[ "$CONFIRM" == "YES" ]] || { echo "Aborted by user."; exit 1; }
 
+# --- 5. Partitioning Logic ---
 if [[ "$DISK" =~ [0-9]$ ]]; then
     P="${DISK}p"
 else
@@ -93,9 +98,11 @@ sleep 2
 mkfs.vfat -F32 "$EFI"
 mkfs.ext4 -F "$BOOT"
 
+echo "[*] Initializing LUKS Encryption..."
 printf "%s" "$LUKS_PASS" | cryptsetup luksFormat "$ROOT_PART" -
 printf "%s" "$LUKS_PASS" | cryptsetup open "$ROOT_PART" cryptroot -
 
+echo "[*] Building LVM Architecture..."
 pvcreate /dev/mapper/cryptroot
 vgcreate voidvg /dev/mapper/cryptroot
 
@@ -107,21 +114,23 @@ mkfs.ext4 -F /dev/voidvg/root
 mkfs.ext4 -F /dev/voidvg/home
 mkswap /dev/voidvg/swap
 
-echo "[*] Mounting filesystems..."
+# --- 6. The Patched Mount Sequence ---
+echo "[*] Mounting filesystems securely..."
 mount /dev/voidvg/root /mnt
 mkdir -p /mnt/{boot,home,etc/xbps.d}
 
 # Mount BOOT first
 mount "$BOOT" /mnt/boot
 
-# Now create and mount EFI safely inside BOOT
+# Now safely create and mount EFI inside the active BOOT partition
 mkdir -p /mnt/boot/efi
 mount "$EFI" /mnt/boot/efi
 
-# Mount the rest
+# Mount the remaining volumes
 mount /dev/voidvg/home /mnt/home
 swapon /dev/voidvg/swap
 
+# --- Extract UUIDs for FSTAB ---
 BOOT_UUID=$(blkid -s UUID -o value "$BOOT")
 EFI_UUID=$(blkid -s UUID -o value "$EFI")
 ROOT_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/root)
@@ -129,38 +138,19 @@ HOME_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/home)
 SWAP_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/swap)
 CRYPT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
 
+# --- 7. XBPS Package Sync ---
 UCODE=""
-# AMD microcode is natively bundled in linux-firmware-amd, so we only target Intel here
+# AMD microcode is natively bundled in linux-firmware-amd. Target Intel only.
 grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
 
 echo "XBPS_FETCH_OPTIONS=\"--parallel=5\"" > /mnt/etc/xbps.d/00-fetch.conf
 echo "virtualpkg=linux:linux-mainline" > /mnt/etc/xbps.d/10-kernel.conf
 
-# --- CRITICAL UPGRADE: Dynamic Mirror Auto-Selector ---
-echo "[*] Pinging Tier-1 mirrors to find the fastest connection..."
-BEST_TIME=999
+# Force Fastly CDN to prevent mirror Input/Output drops
 REPO_URL="https://repo-default.voidlinux.org"
+echo "[*] Syncing packages from Fastly Global CDN: $REPO_URL"
 
-MIRRORS=(
-    "https://repo-default.voidlinux.org"
-    "https://repo-fi.voidlinux.org"
-    "https://repo-us.voidlinux.org"
-    "https://repo-fastly.voidlinux.org"
-    "https://mirrors.servercentral.com/voidlinux"
-)
-
-for m in "${MIRRORS[@]}"; do
-    # Ping the repodata file to test true HTTP latency
-    TEST_TIME=$(LC_NUMERIC=C curl -s -o /dev/null -w "%{time_total}" -m 2 "$m/current/x86_64-repodata" || echo "999")
-    
-    if awk "BEGIN {exit !($TEST_TIME < $BEST_TIME)}"; then
-        BEST_TIME=$TEST_TIME
-        REPO_URL=$m
-    fi
-done
-echo "[+] Fastest Mirror Selected: $REPO_URL (Response time: ${BEST_TIME}s)"
-
-# --- CRITICAL FIX: Changed --repository-cache to -c ---
+# Patched: Using -c for cache directory instead of --repository-cache
 xbps-install -Sy -c /var/cache/xbps \
     -R "$REPO_URL/current" \
     -R "$REPO_URL/current/nonfree" \
@@ -168,8 +158,9 @@ xbps-install -Sy -c /var/cache/xbps \
     base-system linux-mainline linux-mainline-headers linux-lts linux-lts-headers $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
     linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
     gnome-core gdm dbus elogind NetworkManager \
-    ethtool pciutils zramen irqbalance lm_sensors cpupower dconf haveged preload
+    ethtool pciutils zramen irqbalance lm_sensors cpupower dconf haveged preload parted
 
+# --- 8. Chroot Pre-flight ---
 mount --rbind /dev /mnt/dev
 mount --rbind /proc /mnt/proc
 mount --rbind /sys /mnt/sys
@@ -182,6 +173,7 @@ chroot /mnt /usr/bin/env HOST_NAME="$HOST_NAME" CRYPT_UUID="$CRYPT_UUID" CRYPT_O
     /bin/bash << 'CHROOT_EOF'
 set -euo pipefail
 
+# --- A. Core System Config ---
 echo "$HOST_NAME" > /etc/hostname
 echo "cryptroot UUID=$CRYPT_UUID none $CRYPT_OPTS" > /etc/crypttab
 
@@ -198,11 +190,13 @@ echo "en_US.UTF-8 UTF-8" >> /etc/default/libc-locales
 xbps-reconfigure -f glibc-locales
 ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime
 
+# --- B. Users & Sudo ---
 useradd -m -G wheel,audio,video,input -s /bin/bash "$SYS_USER"
 echo "$SYS_USER:$SYS_PASS" | chpasswd
 echo "root:$SYS_PASS" | chpasswd
 sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
+# --- C. GRUB & Dracut Hardening ---
 sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="amd_pstate=active audit=0 nowatchdog nmi_watchdog=0 rcu_nocbs=all quiet loglevel=3 /' /etc/default/grub
 
 grep -q "^GRUB_TIMEOUT=" /etc/default/grub \
@@ -219,6 +213,7 @@ echo 'hostonly="yes"' > /etc/dracut.conf.d/hostonly.conf
 for k_dir in /lib/modules/*; do
     if [ -d "$k_dir" ]; then
         KVER=$(basename "$k_dir")
+        echo "[*] Building initramfs for kernel: $KVER"
         dracut -f --kver "$KVER"
     fi
 done
@@ -232,6 +227,7 @@ else
 fi
 grub-mkconfig -o /boot/grub/grub.cfg
 
+# --- D. Network & Latency Optimization ---
 cat <<SYSCTL > /etc/sysctl.d/99-trading-ultra.conf
 kernel.timer_migration=0
 kernel.sched_wakeup_granularity_ns=1500000
@@ -258,6 +254,7 @@ LIMITS
 mkdir -p /etc/default
 echo 'zram_size=50%' > /etc/default/zramen
 
+# --- E. Hardware Acceleration ---
 mkdir -p /etc/chromium
 cat <<CHROMIUM > /etc/chromium/custom-flags.conf
 --ignore-gpu-blocklist
@@ -286,6 +283,7 @@ if ! grep -q "trading-boot-init.sh" /etc/rc.local; then
     echo "/usr/local/bin/trading-boot-init.sh" >> /etc/rc.local
 fi
 
+# --- F. Service Enablement ---
 for s in dbus elogind NetworkManager zramen irqbalance gdm lvm haveged fstrim preload udevd dhcpcd; do
     [ -d "/etc/sv/$s" ] && ln -sfn "/etc/sv/$s" /etc/runit/runsvdir/default/
 done
@@ -293,6 +291,7 @@ done
 xbps-remove -Fy tracker3-miners || true
 CHROOT_EOF
 
+# --- 9. Final Cleanup ---
 cp "$LOGFILE" /mnt/root/void-install.log
 umount -R /mnt
 swapoff -a
