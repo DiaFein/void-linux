@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Void Linux Hybrid RAM-OS Builder (V11 - FHS Compliant Architecture)
+# Void Linux Hybrid RAM-OS Builder (V12 - Production Release)
 # Features: /var/tmp SSD Staging, ZRAM, EarlyOOM, Runit CPU Tuning,
-#           Infinite-Recursion Protection, and ISO Exclusions.
+#           Infinite-Recursion Protection, ISO Exclusions, and
+#           Memory-Safe ZSTD Compression with Integrity Verification.
 # ==============================================================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -20,7 +21,7 @@ fi
 trap 'rm -f "$LOCKFILE"' EXIT INT TERM
 touch "$LOCKFILE"
 
-echo "[+] Starting V11 Trading OS Build Process (FHS Staging Mode)..."
+echo "[+] Starting V12 Trading OS Build Process..."
 
 # Pre-Flight Disk Space Check
 SFS_OUT="/boot/trading.sfs"
@@ -56,7 +57,7 @@ sync
 echo 3 > /proc/sys/vm/drop_caches
 
 # ==============================================================================
-# The Rsync Snapshot (Now utilizing FHS-Compliant /var/tmp on SSD)
+# The Rsync Snapshot (FHS-Compliant /var/tmp on SSD)
 # ==============================================================================
 WORKDIR="/var/tmp/void-live-build"
 echo "[+] Using FHS-Compliant SSD Staging Directory: $WORKDIR"
@@ -140,15 +141,16 @@ echo "[+] Marking build version..."
 date > "$WORKDIR/etc/trading-os-build"
 
 # ==============================================================================
-# The Build & Verification Phase
+# The Build & Verification Phase (Memory Safe)
 # ==============================================================================
 if [ -f "$SFS_OUT" ]; then
     mv "$SFS_OUT" "$SFS_BAK"
 fi
 
 echo "[+] Compressing staging area into $SFS_OUT..."
+# Memory-safe compression: Using default ZSTD level, bounded to 4GB RAM 
 mksquashfs "$WORKDIR" "$SFS_OUT" \
-    -comp zstd -Xcompression-level 15 -b 1M -processors $(nproc) \
+    -comp zstd -b 1M -mem 4G -processors $(nproc) \
     -noappend
 
 if [ $? -ne 0 ]; then
@@ -159,12 +161,15 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "[+] Verifying SquashFS Integrity..."
-if ! unsquashfs -t "$SFS_OUT" > /dev/null 2>&1; then
-    echo "[-] CRITICAL: Image integrity check failed! Restoring backup."
+# Output is explicitly visible so any failure reasons are logged to the terminal
+if ! unsquashfs -t "$SFS_OUT"; then
+    echo "[-] CRITICAL: Image integrity check failed! Archive is corrupt."
+    echo "[-] Restoring backup..."
     mv "$SFS_BAK" "$SFS_OUT" 2>/dev/null
     rm -rf "$WORKDIR"
     exit 1
 fi
+echo "[+] Integrity Check Passed."
 
 echo "[+] Final Image Size: $(du -h "$SFS_OUT" | awk '{print $1}')"
 
@@ -172,7 +177,9 @@ echo "[+] Final Image Size: $(du -h "$SFS_OUT" | awk '{print $1}')"
 echo "[+] Cleaning up SSD staging directory..."
 rm -rf "$WORKDIR"
 
+# ==============================================================================
 # Dynamic GRUB Configuration
+# ==============================================================================
 echo "[+] Configuring GRUB dynamically..."
 BOOT_UUID=$(findmnt -n -o UUID -T /boot)
 ROOT_UUID=$(findmnt -n -o UUID -T /)
@@ -218,5 +225,5 @@ if [ "$SCRIPT_PATH" != "$TARGET_BIN" ]; then
 fi
 
 echo "=============================================================================="
-echo "[+] SUCCESS: V11 FHS-Compliant Trading OS is ready."
+echo "[+] SUCCESS: V12 Production Trading OS is ready."
 echo "=============================================================================="
