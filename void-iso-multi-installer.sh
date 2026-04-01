@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# VOID LINUX PRODUCTION ISO BUILDER (GOLD MASTER)
+# VOID LINUX PRODUCTION ISO BUILDER (GOLD MASTER V2)
 # Target: Custom GNOME ISO with High-Performance Trading Installer
-# Features: Local Clone (30s install), Network Sync, Hardened LUKS/LVM/Mainline
+# Fixes: Reordered Live-CD cleanup to prevent /etc/shadow password wiping
 # ==============================================================================
 
 set -euo pipefail
@@ -153,7 +153,7 @@ EOF_LAUNCHER
 chmod +x custom-overlay/usr/bin/void-setup
 
 # 5. The High-Performance Deployer
-echo "    [+] Injecting Custom Trading Installer (Gold Master)..."
+echo "    [+] Injecting Custom Trading Installer (Gold Master V2)..."
 cat << 'EOF_TRADER' > custom-overlay/usr/bin/void-trading-install
 #!/bin/bash
 set -euo pipefail
@@ -174,8 +174,8 @@ echo ""
 read -rp "Target disk (e.g. /dev/sda, /dev/vda, /dev/nvme0n1): " DISK
 
 echo -e "\n[*] Installation Source"
-echo "1) Local ISO Clone (Lightning Fast - 30s Install)"
-echo "2) Network Install (Slower - Downloads latest from mirror)"
+echo "1) Local ISO Clone (Lightning Fast - Copies live environment to disk)"
+echo "2) Network Install (Slower - Downloads latest from fastest mirror)"
 read -rp "Select source [1 or 2, Default: 1]: " INSTALL_SOURCE
 INSTALL_SOURCE=${INSTALL_SOURCE:-1}
 
@@ -245,12 +245,14 @@ HOME_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/home)
 SWAP_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/swap)
 CRYPT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
 
-# Base Installation
+# Base Installation Prep
 UCODE=""
 grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
-echo "ignorepkg=linux" > /mnt/etc/xbps.d/10-ignore.conf
 
-if [ "$INSTALL_SOURCE" = "1" ]; then
+echo "ignorepkg=linux" > /mnt/etc/xbps.d/10-ignore.conf
+echo "ignorepkg=linux-headers" >> /mnt/etc/xbps.d/10-ignore.conf
+
+if [ "$INSTALL_SOURCE" = "1" ] && [ -d "/repo" ]; then
     echo "[*] Cloning RootFS (Lightning Mode)..."
     tar -cpf - -C / bin etc home lib lib32 lib64 opt root sbin usr var | tar -xpf - -C /mnt
     tar -cpf - -C /boot . | tar -xpf - -C /mnt/boot
@@ -258,10 +260,17 @@ if [ "$INSTALL_SOURCE" = "1" ]; then
     REPO_FLAGS="-i -R /repo"
 else
     echo "[*] Network Install Mode..."
+    echo "[*] Verifying network connectivity..."
+    if ! ping -c 2 8.8.8.8 >/dev/null 2>&1; then
+        echo "[!] CRITICAL: No internet connection detected."
+        exit 1
+    fi
     REPO_FLAGS="-R __REPO_URL__/current -R __REPO_URL__/current/nonfree"
 fi
 
 cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
+
+echo "[*] Installing/Verifying base system packages..."
 xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt \
     base-system linux-mainline linux-mainline-headers binutils $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
     linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
@@ -271,14 +280,15 @@ xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt \
 mount --rbind /dev /mnt/dev; mount --rbind /proc /mnt/proc; mount --rbind /sys /mnt/sys
 cp /etc/resolv.conf /mnt/etc/resolv.conf
 
+echo "[*] Entering secured chroot environment..."
 chroot /mnt /usr/bin/env HOST_NAME="$HOST_NAME" CRYPT_UUID="$CRYPT_UUID" CRYPT_OPTS="$CRYPT_OPTS" \
     ROOT_LV_UUID="$ROOT_LV_UUID" HOME_LV_UUID="$HOME_LV_UUID" BOOT_UUID="$BOOT_UUID" \
     EFI_UUID="$EFI_UUID" SWAP_LV_UUID="$SWAP_LV_UUID" SYS_USER="$SYS_USER" SYS_PASS="$SYS_PASS" DISK="$DISK" \
     INSTALL_SOURCE="$INSTALL_SOURCE" /bin/bash << 'CHROOT_EOF'
 set -euo pipefail
 
-# Bulletproof directory creation
-mkdir -p /etc/sysctl.d /etc/modules-load.d /etc/security/limits.d /etc/default /etc/chromium /etc/dracut.conf.d /etc/X11/xorg.conf.d
+# === Bulletproof directory creation ===
+mkdir -p /etc/sysctl.d /etc/modules-load.d /etc/security/limits.d /etc/default /etc/chromium /etc/dracut.conf.d /etc/X11/xorg.conf.d /usr/local/bin
 
 echo "$HOST_NAME" > /etc/hostname
 echo "cryptroot UUID=$CRYPT_UUID none $CRYPT_OPTS" > /etc/crypttab
@@ -291,9 +301,10 @@ UUID=$SWAP_LV_UUID  none      swap    defaults 0 0
 tmpfs               /tmp      tmpfs   defaults,noatime,mode=1777 0 0
 FSTAB
 
-# Timezone & Keyboard
+# Timezone & US Keyboard Hardcode
 echo "en_US.UTF-8 UTF-8" >> /etc/default/libc-locales; xbps-reconfigure -f glibc-locales
 ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime
+
 sed -i 's/^#KEYMAP=.*/KEYMAP="us"/' /etc/rc.conf || echo 'KEYMAP="us"' >> /etc/rc.conf
 cat <<XKB > /etc/X11/xorg.conf.d/00-keyboard.conf
 Section "InputClass"
@@ -303,9 +314,23 @@ Section "InputClass"
 EndSection
 XKB
 
+# === CRITICAL PASSWORD & USER FIX ===
+# Nuke the Live ISO packages FIRST so they don't overwrite our shadow files
+if [ "$INSTALL_SOURCE" = "1" ]; then
+    xbps-remove -Ry void-live >/dev/null 2>&1 || true
+    userdel -f -r anon >/dev/null 2>&1 || true
+fi
+
+# Force repair the shadow file structures
+pwconv
+grpconv
+
+# Safely inject the permanent users and explicit SHA512 passwords
 useradd -m -G wheel,audio,video,input -s /bin/bash "$SYS_USER"
-echo "$SYS_USER:$SYS_PASS" | chpasswd; echo "root:$SYS_PASS" | chpasswd
+echo "$SYS_USER:$SYS_PASS" | chpasswd -c SHA512
+echo "root:$SYS_PASS" | chpasswd -c SHA512
 sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+# =====================================
 
 # Kernel & Boot
 sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="amd_pstate=active audit=0 nowatchdog nmi_watchdog=0 rcu_nocbs=all quiet loglevel=3 /' /etc/default/grub
@@ -324,28 +349,71 @@ else
 fi
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# Performance Tuning
+# === Performance Tuning Restoration ===
 cat <<SYSCTL > /etc/sysctl.d/99-trading-ultra.conf
 kernel.timer_migration=0
 kernel.sched_wakeup_granularity_ns=1500000
+kernel.sched_autogroup_enabled=0
 vm.swappiness=10
+vm.dirty_ratio=10
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_low_latency=1
+net.ipv4.tcp_fastopen=3
+net.core.busy_read=50
+net.core.busy_poll=50
 SYSCTL
+
 echo "tcp_bbr" > /etc/modules-load.d/bbr.conf
+
+cat <<LIMITS > /etc/security/limits.d/99-trading-limits.conf
+* soft nofile 500000
+* hard nofile 1048576
+root soft nofile 500000
+root hard nofile 1048576
+LIMITS
+
 echo 'zram_size=50%' > /etc/default/zramen
+
+cat <<CHROMIUM > /etc/chromium/custom-flags.conf
+--ignore-gpu-blocklist
+--enable-gpu-rasterization
+--enable-zero-copy
+--use-vulkan
+--enable-features=Vulkan
+--ozone-platform-hint=auto
+CHROMIUM
+
+echo 'CHROMIUM_FLAGS="$(cat /etc/chromium/custom-flags.conf | tr "\n" " ")"' > /etc/chromium/default
+
+cat <<BOOTINIT > /usr/local/bin/trading-boot-init.sh
+#!/bin/bash
+echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null
+command -v cpupower >/dev/null && cpupower frequency-set -g performance >/dev/null 2>&1
+if [ -f /sys/class/drm/card0/device/power_dpm_force_performance_level ]; then
+  echo high > /sys/class/drm/card0/device/power_dpm_force_performance_level
+fi
+BOOTINIT
+chmod +x /usr/local/bin/trading-boot-init.sh
+
+touch /etc/rc.local
+chmod +x /etc/rc.local
+if ! grep -q "trading-boot-init.sh" /etc/rc.local; then
+    echo "/usr/local/bin/trading-boot-init.sh" >> /etc/rc.local
+fi
 
 # Services
 for s in dbus elogind NetworkManager zramen irqbalance gdm lvm haveged fstrim preload udevd dhcpcd; do
     [ -d "/etc/sv/$s" ] && ln -sfn "/etc/sv/$s" /etc/runit/runsvdir/default/
 done
 
-[ "$INSTALL_SOURCE" = "1" ] && { xbps-remove -Ry void-live || true; userdel -f -r anon || true; }
 xbps-remove -Fy tracker3-miners || true
 CHROOT_EOF
 
 umount -R /mnt; swapoff -a
-echo "INSTALL COMPLETE. REBOOT NOW."
+echo "======================================================================"
+echo "   INSTALL COMPLETE: Reboot, enter LUKS pass, and enjoy the speed.    "
+echo "======================================================================"
 EOF_TRADER
 
 chmod +x custom-overlay/usr/bin/void-trading-install
@@ -356,7 +424,7 @@ APPS="gnome-core gnome-terminal chromium NetworkManager network-manager-applet e
 VIRT="qemu-ga spice-vdagent"
 UTILS="dhcpcd iproute2 bash-completion nano htop wget curl grub-x86_64-efi os-prober cryptsetup lvm2 mdadm btrfs-progs xfsprogs dosfstools e2fsprogs parted binutils"
 FIRMWARE="linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel linux-firmware-nvidia intel-ucode"
-DRIVERS="mesa mesa-dri mesa-vulkan-radeon mesa-vulkan-intel vulkan-loader void-repo-nonfree"
+DRIVERS="mesa mesa-dri mesa-vaapi mesa-vulkan-radeon mesa-vulkan-intel vulkan-loader void-repo-nonfree"
 
 ALL_PKGS="$APPS $VIRT $UTILS $FIRMWARE $DRIVERS"
 
