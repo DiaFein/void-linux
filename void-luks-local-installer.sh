@@ -2,7 +2,7 @@
 # ==============================================================================
 # VOID LINUX HIGH-PERFORMANCE DEPLOYER (PRODUCTION MASTER)
 # Target: LUKS + LVM + GNOME + AMD GPU + Mainline/LTS
-# Upgrades: Foolproof Directory Creation (Pre-Chroot)
+# Audited: Fixed Chroot Directory Creation, Local/Network Install, Mirror Sync
 # ==============================================================================
 
 set -euo pipefail
@@ -134,7 +134,11 @@ SWAP_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/swap)
 CRYPT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
 
 # --- 8. The Execution Engine (Local vs Network) ---
-if [ "$INSTALL_SOURCE" = "1" ]; then
+UCODE=""
+grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
+echo "virtualpkg=linux:linux-mainline" > /mnt/etc/xbps.d/10-kernel.conf
+
+if [ "$INSTALL_SOURCE" = "1" ] && [ -d "/repo" ]; then
     echo "[*] Starting Lightning-Fast Local Installation..."
     
     DIRS=""
@@ -151,6 +155,17 @@ if [ "$INSTALL_SOURCE" = "1" ]; then
     echo " -> Staging virtual filesystems..."
     mkdir -p /mnt/{dev,proc,sys,tmp,run,mnt,media}
     chmod 1777 /mnt/tmp
+    
+    # -i ignores network configs and strictly uses the local path
+    REPO_FLAGS="-i -R /repo"
+    
+    echo "[*] Repairing base system via local cache..."
+    cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
+    xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt \
+        base-system linux-mainline linux-mainline-headers linux-lts linux-lts-headers $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
+        linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
+        gnome-core gdm dbus elogind NetworkManager \
+        ethtool pciutils zramen irqbalance lm_sensors cpupower dconf haveged preload parted
 
 else
     echo "[*] Starting Network Installation..."
@@ -181,15 +196,10 @@ else
     echo "[+] Fastest Mirror Selected: $REPO_URL (Response time: ${BEST_TIME}s)"
     
     echo "XBPS_FETCH_OPTIONS=\"--parallel=5\"" > /mnt/etc/xbps.d/00-fetch.conf
-    
-    UCODE=""
-    grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
+    REPO_FLAGS="-R $REPO_URL/current -R $REPO_URL/current/nonfree"
 
     echo "[*] Downloading and installing system base..."
-    xbps-install -Sy -c /var/cache/xbps \
-        -R "$REPO_URL/current" \
-        -R "$REPO_URL/current/nonfree" \
-        -r /mnt \
+    xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt \
         base-system linux-mainline linux-mainline-headers linux-lts linux-lts-headers $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
         linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
         gnome-core gdm dbus elogind NetworkManager \
@@ -202,14 +212,6 @@ mount --rbind /proc /mnt/proc
 mount --rbind /sys /mnt/sys
 cp /etc/resolv.conf /mnt/etc/resolv.conf
 
-# CRITICAL FIX: Create Drop-In Folders on the Host Side
-echo "[*] Staging configuration directories..."
-mkdir -p /mnt/etc/sysctl.d
-mkdir -p /mnt/etc/modules-load.d
-mkdir -p /mnt/etc/security/limits.d
-mkdir -p /mnt/etc/default
-mkdir -p /mnt/etc/chromium
-
 echo "[*] Entering strictly secured chroot environment..."
 chroot /mnt /usr/bin/env HOST_NAME="$HOST_NAME" CRYPT_UUID="$CRYPT_UUID" CRYPT_OPTS="$CRYPT_OPTS" \
     ROOT_LV_UUID="$ROOT_LV_UUID" HOME_LV_UUID="$HOME_LV_UUID" BOOT_UUID="$BOOT_UUID" \
@@ -217,6 +219,17 @@ chroot /mnt /usr/bin/env HOST_NAME="$HOST_NAME" CRYPT_UUID="$CRYPT_UUID" CRYPT_O
     INSTALL_SOURCE="$INSTALL_SOURCE" \
     /bin/bash << 'CHROOT_EOF'
 set -euo pipefail
+
+# === BULLETPROOF DIRECTORY CREATION ===
+# Ensures all directories exist before configuration files are written
+mkdir -p /etc/sysctl.d
+mkdir -p /etc/modules-load.d
+mkdir -p /etc/security/limits.d
+mkdir -p /etc/default
+mkdir -p /etc/chromium
+mkdir -p /etc/dracut.conf.d
+mkdir -p /usr/local/bin
+mkdir -p /etc/xbps.d
 
 # --- A. Core System Config ---
 echo "$HOST_NAME" > /etc/hostname
@@ -231,8 +244,10 @@ UUID=$SWAP_LV_UUID  none      swap    defaults 0 0
 tmpfs               /tmp      tmpfs   defaults,noatime,mode=1777 0 0
 FSTAB
 
+# Force future kernel updates to use mainline
 echo "virtualpkg=linux:linux-mainline" > /etc/xbps.d/10-kernel.conf
 
+# Set default robust mirrors
 echo "repository=https://repo-default.voidlinux.org/current" > /etc/xbps.d/00-repository-main.conf
 echo "repository=https://repo-default.voidlinux.org/current/nonfree" >> /etc/xbps.d/00-repository-main.conf
 
@@ -246,12 +261,13 @@ echo "$SYS_USER:$SYS_PASS" | chpasswd
 echo "root:$SYS_PASS" | chpasswd
 sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
+# Purge Live ISO remnants if using the Local Clone method
 if [ "$INSTALL_SOURCE" = "1" ]; then
     xbps-remove -Ry void-live >/dev/null 2>&1 || true
     userdel -f -r anon >/dev/null 2>&1 || true
 fi
 
-# --- C. GRUB & Dracut ---
+# --- C. GRUB & Dracut Hardening ---
 sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="amd_pstate=active audit=0 nowatchdog nmi_watchdog=0 rcu_nocbs=all quiet loglevel=3 /' /etc/default/grub
 
 grep -q "^GRUB_TIMEOUT=" /etc/default/grub \
