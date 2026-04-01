@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
 # VOID LINUX HIGH-PERFORMANCE DEPLOYER (PRODUCTION MASTER)
-# Target: LUKS + LVM + GNOME + AMD GPU + Mainline/LTS
-# Audited: Fixed Chroot Directory Creation, Local/Network Install, Mirror Sync
+# Target: LUKS + LVM + GNOME + AMD GPU + Pure Mainline Kernel
+# Audited: Fixed Chroot Directories, Local/Network Install, Initramfs Stripping
 # ==============================================================================
 
 set -euo pipefail
@@ -136,7 +136,10 @@ CRYPT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
 # --- 8. The Execution Engine (Local vs Network) ---
 UCODE=""
 grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
-echo "virtualpkg=linux:linux-mainline" > /mnt/etc/xbps.d/10-kernel.conf
+
+# CRITICAL FIX: Force pure mainline kernel, ignore stable LTS entirely
+echo "ignorepkg=linux" > /mnt/etc/xbps.d/10-ignore.conf
+echo "ignorepkg=linux-headers" >> /mnt/etc/xbps.d/10-ignore.conf
 
 if [ "$INSTALL_SOURCE" = "1" ] && [ -d "/repo" ]; then
     echo "[*] Starting Lightning-Fast Local Installation..."
@@ -156,13 +159,14 @@ if [ "$INSTALL_SOURCE" = "1" ] && [ -d "/repo" ]; then
     mkdir -p /mnt/{dev,proc,sys,tmp,run,mnt,media}
     chmod 1777 /mnt/tmp
     
-    # -i ignores network configs and strictly uses the local path
     REPO_FLAGS="-i -R /repo"
     
     echo "[*] Repairing base system via local cache..."
     cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
+    
+    # CRITICAL FIX: Added binutils for dracut stripping, removed linux-lts
     xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt \
-        base-system linux-mainline linux-mainline-headers linux-lts linux-lts-headers $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
+        base-system linux-mainline linux-mainline-headers binutils $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
         linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
         gnome-core gdm dbus elogind NetworkManager \
         ethtool pciutils zramen irqbalance lm_sensors cpupower dconf haveged preload parted
@@ -199,8 +203,10 @@ else
     REPO_FLAGS="-R $REPO_URL/current -R $REPO_URL/current/nonfree"
 
     echo "[*] Downloading and installing system base..."
+    
+    # CRITICAL FIX: Added binutils for dracut stripping, removed linux-lts
     xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt \
-        base-system linux-mainline linux-mainline-headers linux-lts linux-lts-headers $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
+        base-system linux-mainline linux-mainline-headers binutils $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
         linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
         gnome-core gdm dbus elogind NetworkManager \
         ethtool pciutils zramen irqbalance lm_sensors cpupower dconf haveged preload parted
@@ -221,7 +227,6 @@ chroot /mnt /usr/bin/env HOST_NAME="$HOST_NAME" CRYPT_UUID="$CRYPT_UUID" CRYPT_O
 set -euo pipefail
 
 # === BULLETPROOF DIRECTORY CREATION ===
-# Ensures all directories exist before configuration files are written
 mkdir -p /etc/sysctl.d
 mkdir -p /etc/modules-load.d
 mkdir -p /etc/security/limits.d
@@ -244,9 +249,6 @@ UUID=$SWAP_LV_UUID  none      swap    defaults 0 0
 tmpfs               /tmp      tmpfs   defaults,noatime,mode=1777 0 0
 FSTAB
 
-# Force future kernel updates to use mainline
-echo "virtualpkg=linux:linux-mainline" > /etc/xbps.d/10-kernel.conf
-
 # Set default robust mirrors
 echo "repository=https://repo-default.voidlinux.org/current" > /etc/xbps.d/00-repository-main.conf
 echo "repository=https://repo-default.voidlinux.org/current/nonfree" >> /etc/xbps.d/00-repository-main.conf
@@ -261,7 +263,6 @@ echo "$SYS_USER:$SYS_PASS" | chpasswd
 echo "root:$SYS_PASS" | chpasswd
 sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-# Purge Live ISO remnants if using the Local Clone method
 if [ "$INSTALL_SOURCE" = "1" ]; then
     xbps-remove -Ry void-live >/dev/null 2>&1 || true
     userdel -f -r anon >/dev/null 2>&1 || true
@@ -274,17 +275,13 @@ grep -q "^GRUB_TIMEOUT=" /etc/default/grub \
   && sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=1/' /etc/default/grub \
   || echo "GRUB_TIMEOUT=1" >> /etc/default/grub
 
-grep -q "^GRUB_DISABLE_SUBMENU=" /etc/default/grub \
-  && sed -i 's/^GRUB_DISABLE_SUBMENU=.*/GRUB_DISABLE_SUBMENU=y/' /etc/default/grub \
-  || echo "GRUB_DISABLE_SUBMENU=y" >> /etc/default/grub
-
 echo 'add_dracutmodules+=" crypt lvm "' > /etc/dracut.conf.d/crypt.conf
 echo 'hostonly="yes"' > /etc/dracut.conf.d/hostonly.conf
 
 for k_dir in /lib/modules/*; do
     if [ -d "$k_dir" ]; then
         KVER=$(basename "$k_dir")
-        echo "[*] Building initramfs for kernel: $KVER"
+        echo "[*] Building compressed initramfs for kernel: $KVER"
         dracut -f --kver "$KVER"
     fi
 done
