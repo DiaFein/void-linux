@@ -2,7 +2,7 @@
 # ==============================================================================
 # VOID LINUX HIGH-PERFORMANCE DEPLOYER (STANDALONE TEST VERSION)
 # Target: LUKS + LVM + GNOME + AMD GPU + Mainline/LTS
-# Includes: Fixed Mount Order, BIOS/UEFI Fallback, Dynamic Sizing
+# Includes: Fixed Mount Order, Ucode Fix, Cache Fix, Dynamic Mirror Selector
 # ==============================================================================
 
 set -euo pipefail
@@ -107,7 +107,6 @@ mkfs.ext4 -F /dev/voidvg/root
 mkfs.ext4 -F /dev/voidvg/home
 mkswap /dev/voidvg/swap
 
-# --- CRITICAL FIX: Safe Mount Sequence ---
 echo "[*] Mounting filesystems..."
 mount /dev/voidvg/root /mnt
 mkdir -p /mnt/{boot,home,etc/xbps.d}
@@ -131,14 +130,37 @@ SWAP_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/swap)
 CRYPT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
 
 UCODE=""
+# AMD microcode is natively bundled in linux-firmware-amd, so we only target Intel here
 grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
 
 echo "XBPS_FETCH_OPTIONS=\"--parallel=5\"" > /mnt/etc/xbps.d/00-fetch.conf
 echo "virtualpkg=linux:linux-mainline" > /mnt/etc/xbps.d/10-kernel.conf
 
+# --- CRITICAL UPGRADE: Dynamic Mirror Auto-Selector ---
+echo "[*] Pinging Tier-1 mirrors to find the fastest connection..."
+BEST_TIME=999
 REPO_URL="https://repo-default.voidlinux.org"
-echo "[*] Syncing packages from: $REPO_URL"
 
+MIRRORS=(
+    "https://repo-default.voidlinux.org"
+    "https://repo-fi.voidlinux.org"
+    "https://repo-us.voidlinux.org"
+    "https://repo-fastly.voidlinux.org"
+    "https://mirrors.servercentral.com/voidlinux"
+)
+
+for m in "${MIRRORS[@]}"; do
+    # Ping the repodata file to test true HTTP latency
+    TEST_TIME=$(LC_NUMERIC=C curl -s -o /dev/null -w "%{time_total}" -m 2 "$m/current/x86_64-repodata" || echo "999")
+    
+    if awk "BEGIN {exit !($TEST_TIME < $BEST_TIME)}"; then
+        BEST_TIME=$TEST_TIME
+        REPO_URL=$m
+    fi
+done
+echo "[+] Fastest Mirror Selected: $REPO_URL (Response time: ${BEST_TIME}s)"
+
+# --- CRITICAL FIX: Changed --repository-cache to -c ---
 xbps-install -Sy -c /var/cache/xbps \
     -R "$REPO_URL/current" \
     -R "$REPO_URL/current/nonfree" \
