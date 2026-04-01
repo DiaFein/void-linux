@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ==============================================================================
-# Void Linux Hybrid RAM-OS Builder (V9 - Ultimate Performance)
-# Features: Rsync Staging, ZRAM Compression, Runit CPU Tuning, EarlyOOM,
-#           Idempotent tmpfs, Sysctl Overcommit, and Log Suppression.
+# Void Linux Hybrid RAM-OS Builder (V11 - FHS Compliant Architecture)
+# Features: /var/tmp SSD Staging, ZRAM, EarlyOOM, Runit CPU Tuning,
+#           Infinite-Recursion Protection, and ISO Exclusions.
 # ==============================================================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -20,7 +20,7 @@ fi
 trap 'rm -f "$LOCKFILE"' EXIT INT TERM
 touch "$LOCKFILE"
 
-echo "[+] Starting V9 Ultimate Trading OS Build Process..."
+echo "[+] Starting V11 Trading OS Build Process (FHS Staging Mode)..."
 
 # Pre-Flight Disk Space Check
 SFS_OUT="/boot/trading.sfs"
@@ -33,7 +33,7 @@ if [ "$FREE_SPACE" -lt 1500000 ]; then
   exit 1
 fi
 
-# Dependency Check (Added earlyoom & zramen to ensure host has them)
+# Dependency Check
 if ! command -v mksquashfs &> /dev/null || ! command -v rsync &> /dev/null || ! command -v unsquashfs &> /dev/null || [ ! -d /etc/sv/zramen ]; then
     echo "[+] Installing required tools (squashfs, rsync, earlyoom, zramen)..."
     xbps-install -Sy squashfs-tools rsync earlyoom zramen
@@ -55,14 +55,19 @@ xbps-remove -yO
 sync
 echo 3 > /proc/sys/vm/drop_caches
 
-# The Rsync Snapshot
-WORKDIR="/tmp/live-build"
+# ==============================================================================
+# The Rsync Snapshot (Now utilizing FHS-Compliant /var/tmp on SSD)
+# ==============================================================================
+WORKDIR="/var/tmp/void-live-build"
+echo "[+] Using FHS-Compliant SSD Staging Directory: $WORKDIR"
+
 rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR"
 
 echo "[+] Creating stable read-only snapshot via rsync..."
 rsync -aAXx --delete \
-  --exclude={"/proc/*","/sys/*","/dev/*","/run/*","/tmp/*","/mnt/*","/media/*","/boot/*","/var/cache/*","/var/tmp/*","/var/log/*","/home/*/.cache/*"} \
+  --exclude={"/proc/*","/sys/*","/dev/*","/run/*","/tmp/*","/mnt/*","/media/*","/boot/*","/var/cache/*","/var/tmp/*","/var/log/*","/home/*/.cache/*","/home/*/void-iso/*","**/*.iso"} \
+  --exclude="$WORKDIR" \
   / "$WORKDIR/"
 
 if [ $? -ne 0 ]; then
@@ -71,7 +76,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # ==============================================================================
-# V9 ADVANCED PERFORMANCE TUNING & SANITIZATION
+# ADVANCED PERFORMANCE TUNING & SANITIZATION
 # ==============================================================================
 echo "[+] Sanitizing fstab and injecting idempotent tmpfs..."
 sed -i '/^UUID=/d' "$WORKDIR/etc/fstab"
@@ -99,8 +104,6 @@ if [ -L /etc/localtime ]; then
     cp --remove-destination "$(readlink -f /etc/localtime)" "$WORKDIR/etc/localtime"
 fi
 
-# ----------------- THE V9 PERFORMANCE INJECTIONS -----------------
-
 echo "[+] Configuring ZRAM (zstd) for massive memory multiplication..."
 mkdir -p "$WORKDIR/etc/default"
 cat <<EOF > "$WORKDIR/etc/default/zramen"
@@ -116,7 +119,6 @@ cat << 'EOF' > "$WORKDIR/etc/sv/cpu-performance/run"
 for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
     echo performance > "$cpu" 2>/dev/null
 done
-# Sleep infinity keeps the runit service 'up' without eating CPU
 exec sleep infinity
 EOF
 chmod +x "$WORKDIR/etc/sv/cpu-performance/run"
@@ -131,15 +133,15 @@ echo "vm.overcommit_memory=1" >> "$WORKDIR/etc/sysctl.conf"
 echo "vm.swappiness=10" >> "$WORKDIR/etc/sysctl.conf"
 
 echo "[+] Suppressing native runit logging to save RAM and CPU..."
-# Void uses socklog, not systemd/journald. Unlinking these disables local logging.
 rm -f "$WORKDIR/var/service/socklog-unix" 2>/dev/null || true
 rm -f "$WORKDIR/var/service/nanoklogd" 2>/dev/null || true
 
 echo "[+] Marking build version..."
 date > "$WORKDIR/etc/trading-os-build"
-# ==============================================================================
 
+# ==============================================================================
 # The Build & Verification Phase
+# ==============================================================================
 if [ -f "$SFS_OUT" ]; then
     mv "$SFS_OUT" "$SFS_BAK"
 fi
@@ -165,6 +167,9 @@ if ! unsquashfs -t "$SFS_OUT" > /dev/null 2>&1; then
 fi
 
 echo "[+] Final Image Size: $(du -h "$SFS_OUT" | awk '{print $1}')"
+
+# Clean up SSD staging area to save persistent disk space
+echo "[+] Cleaning up SSD staging directory..."
 rm -rf "$WORKDIR"
 
 # Dynamic GRUB Configuration
@@ -213,5 +218,5 @@ if [ "$SCRIPT_PATH" != "$TARGET_BIN" ]; then
 fi
 
 echo "=============================================================================="
-echo "[+] SUCCESS: V9 Ultimate Trading OS is ready."
+echo "[+] SUCCESS: V11 FHS-Compliant Trading OS is ready."
 echo "=============================================================================="
