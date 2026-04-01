@@ -2,7 +2,7 @@
 # ==============================================================================
 # VOID LINUX HIGH-PERFORMANCE DEPLOYER (PRODUCTION MASTER)
 # Target: LUKS + LVM + GNOME + AMD GPU + Mainline/LTS
-# Upgrades: Local vs Network Install Menu, Offline Support, Repo Isolation (-i)
+# Upgrades: Foolproof Directory Creation (Pre-Chroot)
 # ==============================================================================
 
 set -euo pipefail
@@ -27,8 +27,8 @@ read -rp "Target disk (e.g. /dev/sda, /dev/vda, /dev/nvme0n1): " DISK
 
 # --- 3. Installation Source ---
 echo -e "\n[*] Installation Source"
-echo "1) Local ISO (Lightning Fast - Uses pre-downloaded packages from USB)"
-echo "2) Network (Slower - Downloads latest packages from mirrors)"
+echo "1) Local ISO Clone (Lightning Fast - Copies live environment directly to disk)"
+echo "2) Network Install (Slower - Downloads fresh packages from fastest mirror)"
 read -rp "Select source [1 or 2, Default: 1]: " INSTALL_SOURCE
 INSTALL_SOURCE=${INSTALL_SOURCE:-1}
 
@@ -133,19 +133,27 @@ HOME_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/home)
 SWAP_LV_UUID=$(blkid -s UUID -o value /dev/voidvg/swap)
 CRYPT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
 
-# --- 8. Network vs Local Routing ---
-UCODE=""
-grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
-echo "virtualpkg=linux:linux-mainline" > /mnt/etc/xbps.d/10-kernel.conf
+# --- 8. The Execution Engine (Local vs Network) ---
+if [ "$INSTALL_SOURCE" = "1" ]; then
+    echo "[*] Starting Lightning-Fast Local Installation..."
+    
+    DIRS=""
+    for d in bin etc home lib lib32 lib64 opt root sbin usr var; do
+        [ -e "/$d" ] && DIRS="$DIRS $d"
+    done
+    
+    echo " -> Cloning root filesystem (this will only take a moment)..."
+    tar -cpf - -C / $DIRS | tar -xpf - -C /mnt
+    
+    echo " -> Cloning boot partition..."
+    tar -cpf - -C /boot . | tar -xpf - -C /mnt/boot
+    
+    echo " -> Staging virtual filesystems..."
+    mkdir -p /mnt/{dev,proc,sys,tmp,run,mnt,media}
+    chmod 1777 /mnt/tmp
 
-if [ "$INSTALL_SOURCE" = "1" ] && [ -d "/repo" ]; then
-    echo "[*] Using Local ISO Repository for lightning-fast installation..."
-    # -i ignores network configs and strictly uses the local path
-    REPO_FLAGS="-i -R /repo"
 else
-    if [ "$INSTALL_SOURCE" = "1" ]; then
-        echo "[!] Local /repo not found on this media! Falling back to Network..."
-    fi
+    echo "[*] Starting Network Installation..."
     
     echo "[*] Verifying network connectivity..."
     if ! ping -c 2 8.8.8.8 >/dev/null 2>&1; then
@@ -173,31 +181,40 @@ else
     echo "[+] Fastest Mirror Selected: $REPO_URL (Response time: ${BEST_TIME}s)"
     
     echo "XBPS_FETCH_OPTIONS=\"--parallel=5\"" > /mnt/etc/xbps.d/00-fetch.conf
-    # -i ensures it ONLY pulls from the fastest mirror and ignores slow defaults
-    REPO_FLAGS="-i -R $REPO_URL/current -R $REPO_URL/current/nonfree"
+    
+    UCODE=""
+    grep -q "GenuineIntel" /proc/cpuinfo && UCODE="intel-ucode"
+
+    echo "[*] Downloading and installing system base..."
+    xbps-install -Sy -c /var/cache/xbps \
+        -R "$REPO_URL/current" \
+        -R "$REPO_URL/current/nonfree" \
+        -r /mnt \
+        base-system linux-mainline linux-mainline-headers linux-lts linux-lts-headers $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
+        linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
+        gnome-core gdm dbus elogind NetworkManager \
+        ethtool pciutils zramen irqbalance lm_sensors cpupower dconf haveged preload parted
 fi
 
-# --- 9. XBPS Package Sync ---
-echo "[*] Installing base system and packages..."
-# Copy RSA keys to target so local ISO packages pass signature verification
-cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
-
-xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt \
-    base-system linux-mainline linux-mainline-headers linux-lts linux-lts-headers $UCODE cryptsetup lvm2 grub-x86_64-efi sudo \
-    linux-firmware-amd mesa-dri mesa-vaapi mesa-vulkan-radeon \
-    gnome-core gdm dbus elogind NetworkManager \
-    ethtool pciutils zramen irqbalance lm_sensors cpupower dconf haveged preload parted
-
-# --- 10. Chroot Pre-flight ---
+# --- 9. Pre-flight Configurations ---
 mount --rbind /dev /mnt/dev
 mount --rbind /proc /mnt/proc
 mount --rbind /sys /mnt/sys
 cp /etc/resolv.conf /mnt/etc/resolv.conf
 
+# CRITICAL FIX: Create Drop-In Folders on the Host Side
+echo "[*] Staging configuration directories..."
+mkdir -p /mnt/etc/sysctl.d
+mkdir -p /mnt/etc/modules-load.d
+mkdir -p /mnt/etc/security/limits.d
+mkdir -p /mnt/etc/default
+mkdir -p /mnt/etc/chromium
+
 echo "[*] Entering strictly secured chroot environment..."
 chroot /mnt /usr/bin/env HOST_NAME="$HOST_NAME" CRYPT_UUID="$CRYPT_UUID" CRYPT_OPTS="$CRYPT_OPTS" \
     ROOT_LV_UUID="$ROOT_LV_UUID" HOME_LV_UUID="$HOME_LV_UUID" BOOT_UUID="$BOOT_UUID" \
     EFI_UUID="$EFI_UUID" SWAP_LV_UUID="$SWAP_LV_UUID" SYS_USER="$SYS_USER" SYS_PASS="$SYS_PASS" DISK="$DISK" \
+    INSTALL_SOURCE="$INSTALL_SOURCE" \
     /bin/bash << 'CHROOT_EOF'
 set -euo pipefail
 
@@ -214,17 +231,27 @@ UUID=$SWAP_LV_UUID  none      swap    defaults 0 0
 tmpfs               /tmp      tmpfs   defaults,noatime,mode=1777 0 0
 FSTAB
 
+echo "virtualpkg=linux:linux-mainline" > /etc/xbps.d/10-kernel.conf
+
+echo "repository=https://repo-default.voidlinux.org/current" > /etc/xbps.d/00-repository-main.conf
+echo "repository=https://repo-default.voidlinux.org/current/nonfree" >> /etc/xbps.d/00-repository-main.conf
+
 echo "en_US.UTF-8 UTF-8" >> /etc/default/libc-locales
 xbps-reconfigure -f glibc-locales
 ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime
 
-# --- B. Users & Sudo ---
+# --- B. Users & Cleanups ---
 useradd -m -G wheel,audio,video,input -s /bin/bash "$SYS_USER"
 echo "$SYS_USER:$SYS_PASS" | chpasswd
 echo "root:$SYS_PASS" | chpasswd
 sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-# --- C. GRUB & Dracut Hardening ---
+if [ "$INSTALL_SOURCE" = "1" ]; then
+    xbps-remove -Ry void-live >/dev/null 2>&1 || true
+    userdel -f -r anon >/dev/null 2>&1 || true
+fi
+
+# --- C. GRUB & Dracut ---
 sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="amd_pstate=active audit=0 nowatchdog nmi_watchdog=0 rcu_nocbs=all quiet loglevel=3 /' /etc/default/grub
 
 grep -q "^GRUB_TIMEOUT=" /etc/default/grub \
@@ -256,7 +283,6 @@ fi
 grub-mkconfig -o /boot/grub/grub.cfg
 
 # --- D. Network & Latency Optimization ---
-mkdir -p /etc/sysctl.d   # <--- ADD THIS LINE
 cat <<SYSCTL > /etc/sysctl.d/99-trading-ultra.conf
 kernel.timer_migration=0
 kernel.sched_wakeup_granularity_ns=1500000
@@ -271,10 +297,8 @@ net.core.busy_read=50
 net.core.busy_poll=50
 SYSCTL
 
-mkdir -p /etc/modules-load.d   # <--- ADD THIS LINE
 echo "tcp_bbr" > /etc/modules-load.d/bbr.conf
 
-mkdir -p /etc/security/limits.d   # <--- ADD THIS LINE
 cat <<LIMITS > /etc/security/limits.d/99-trading-limits.conf
 * soft nofile 500000
 * hard nofile 1048576
@@ -282,11 +306,9 @@ root soft nofile 500000
 root hard nofile 1048576
 LIMITS
 
-mkdir -p /etc/default
 echo 'zram_size=50%' > /etc/default/zramen
 
 # --- E. Hardware Acceleration ---
-mkdir -p /etc/chromium
 cat <<CHROMIUM > /etc/chromium/custom-flags.conf
 --ignore-gpu-blocklist
 --enable-gpu-rasterization
@@ -322,7 +344,7 @@ done
 xbps-remove -Fy tracker3-miners || true
 CHROOT_EOF
 
-# --- 11. Final Cleanup ---
+# --- 10. Final Cleanup ---
 cp "$LOGFILE" /mnt/root/void-install.log
 umount -R /mnt
 swapoff -a
