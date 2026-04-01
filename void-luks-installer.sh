@@ -140,7 +140,7 @@ echo "virtualpkg=linux:linux-mainline" > /mnt/etc/xbps.d/10-kernel.conf
 REPO_URL="https://repo-default.voidlinux.org"
 echo "[*] Syncing packages from: $REPO_URL"
 
-xbps-install -Sy --repository-cache /var/cache/xbps \
+xbps-install -Sy -c /var/cache/xbps \
     -R "$REPO_URL/current" \
     -R "$REPO_URL/current/nonfree" \
     -r /mnt \
