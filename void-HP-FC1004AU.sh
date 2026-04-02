@@ -2,7 +2,7 @@
 # ==============================================================================
 # VOID LINUX CUSTOM ISO BUILDER: HP 15 / Universal (No NVIDIA)
 # Features: GNOME, PipeWire, AppArmor, ZRAM, Chrony, LVM+LUKS
-# Fix: Void Linux runit service name for BlueZ is 'bluetoothd'
+# Fix: Removed bluetoothd from auto-enable (User will enable manually later)
 # ==============================================================================
 
 set -euo pipefail
@@ -197,7 +197,7 @@ mount --rbind /dev /mnt/dev; mount --rbind /proc /mnt/proc; mount --rbind /sys /
 cp /etc/resolv.conf /mnt/etc/resolv.conf
 cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
 
-# Exact package list
+# Exact package list with fixed Void Linux names
 CORE_PKGS="base-system linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel intel-ucode \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
@@ -266,8 +266,8 @@ done
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Void --recheck
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# FIXED: 'bluetooth' changed to 'bluetoothd'
-for s in dbus elogind NetworkManager bluetoothd cupsd tlp zramen chronyd apparmor gdm udevd; do
+# Removed bluetooth service enablement here to ensure seamless VM builds
+for s in dbus elogind NetworkManager cupsd tlp zramen chronyd apparmor gdm udevd; do
     [ -d "/etc/sv/$s" ] && ln -sfn "/etc/sv/$s" /etc/runit/runsvdir/default/
 done
 
@@ -334,12 +334,12 @@ fi
 # ==============================================================================
 
 echo "==> [5/6] Baking the ISO..."
-# FIXED: 'bluetooth' changed to 'bluetoothd'
+# Removed bluetooth from the -S flag as well
 sudo ./mklive.sh \
     -a x86_64 \
     -o hp-void-gnome-trading.iso \
     -v linux-mainline \
-    -S "dbus elogind NetworkManager gdm qemu-ga bluetoothd" \
+    -S "dbus elogind NetworkManager gdm qemu-ga" \
     -p "$ALL_PKGS" \
     -r "$REPO_URL/current" \
     -r "$REPO_URL/current/nonfree" \
