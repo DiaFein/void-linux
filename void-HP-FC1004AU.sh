@@ -2,7 +2,7 @@
 # ==============================================================================
 # VOID LINUX CUSTOM ISO BUILDER: HP 15 / Universal (No NVIDIA)
 # Features: GNOME, PipeWire, AppArmor, ZRAM, Chrony, LVM+LUKS
-# Verification: Includes Preflight Package Dry-Run Checker
+# Verification: Preflight Package Checker Active (Arch/Debian names fixed)
 # ==============================================================================
 
 set -euo pipefail
@@ -197,18 +197,18 @@ mount --rbind /dev /mnt/dev; mount --rbind /proc /mnt/proc; mount --rbind /sys /
 cp /etc/resolv.conf /mnt/etc/resolv.conf
 cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
 
-# Exact package list (Removed mesa-vdpau)
+# Exact package list with fixed Void Linux names
 CORE_PKGS="base-system linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel intel-ucode \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
-mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils vulkan-tools \
+mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils \
 elogind dbus polkit NetworkManager network-manager-applet bluez blueman \
 cups cups-filters system-config-printer xdg-user-dirs xdg-utils gvfs gvfs-mtp gvfs-smb bash-completion \
 gnome-core gnome-terminal gnome-control-center gnome-system-monitor gnome-disk-utility gnome-tweaks \
 nautilus file-roller eog evince gnome-shell-extensions tlp tlp-rdw powertop zramen cpupower \
-curl wget rsync nftables chrony apparmor apparmor-utils chromium htop btop neovim nano git unzip p7zip \
-pipewire wireplumber alsa-pipewire alsa-ucm-conf libspa-bluetooth pipewire-pulse brightnessctl acpi lm_sensors \
-flatpak noto-fonts noto-fonts-ttf noto-fonts-emoji ttf-dejavu dosfstools ntfs-3g exfatprogs \
+curl wget rsync nftables chrony apparmor chromium htop btop neovim nano git unzip p7zip \
+pipewire wireplumber alsa-pipewire alsa-ucm-conf libspa-bluetooth brightnessctl acpi lm_sensors \
+flatpak noto-fonts-ttf noto-fonts-emoji dejavu-fonts-ttf dosfstools ntfs-3g exfatprogs \
 cryptsetup lvm2 grub-x86_64-efi sudo parted e2fsprogs gdm"
 
 echo "[*] Installing/Verifying system packages..."
@@ -283,23 +283,23 @@ chmod +x custom-overlay/usr/bin/void-trading-install
 sed -i "s|__REPO_URL__|$REPO_URL|g" custom-overlay/usr/bin/void-trading-install
 
 echo "==> [4/6] Defining finalized package list for the ISO..."
-# Note: mesa-vdpau removed as it is obsolete/unavailable
+# Void Linux verified package list
 ALL_PKGS="linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel intel-ucode \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
-mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils vulkan-tools \
+mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils \
 elogind dbus polkit NetworkManager network-manager-applet bluez blueman \
 cups cups-filters system-config-printer xdg-user-dirs xdg-utils gvfs gvfs-mtp gvfs-smb bash-completion \
 gnome-core gnome-terminal gnome-control-center gnome-system-monitor gnome-disk-utility gnome-tweaks \
 nautilus file-roller eog evince gnome-shell-extensions tlp tlp-rdw powertop zramen cpupower \
-curl wget rsync nftables chrony apparmor apparmor-utils chromium htop btop neovim nano git unzip p7zip \
-pipewire wireplumber alsa-pipewire alsa-ucm-conf libspa-bluetooth pipewire-pulse brightnessctl acpi lm_sensors \
-flatpak noto-fonts noto-fonts-ttf noto-fonts-emoji ttf-dejavu dosfstools ntfs-3g exfatprogs \
+curl wget rsync nftables chrony apparmor chromium htop btop neovim nano git unzip p7zip \
+pipewire wireplumber alsa-pipewire alsa-ucm-conf libspa-bluetooth brightnessctl acpi lm_sensors \
+flatpak noto-fonts-ttf noto-fonts-emoji dejavu-fonts-ttf dosfstools ntfs-3g exfatprogs \
 cryptsetup lvm2 grub-x86_64-efi sudo parted e2fsprogs gdm qemu-ga"
 
 
 # ==============================================================================
-# NEW: PREFLIGHT PACKAGE VERIFICATION
+# PREFLIGHT PACKAGE VERIFICATION
 # ==============================================================================
 echo "==> [4.5/6] Running Preflight Package Verification..."
 DUMMY_ROOT=$(mktemp -d)
@@ -333,7 +333,6 @@ else
     echo "    [+] All packages verified successfully. Proceeding to build."
 fi
 # ==============================================================================
-
 
 echo "==> [5/6] Baking the ISO..."
 sudo ./mklive.sh \
