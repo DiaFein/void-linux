@@ -2,7 +2,7 @@
 # ==============================================================================
 # VOID LINUX CUSTOM ISO BUILDER: HP 15 / Universal (No NVIDIA)
 # Features: GNOME, PipeWire, AppArmor, ZRAM, Chrony, LVM+LUKS
-# Verification: Preflight Package Checker Active (Arch/Debian names fixed)
+# Fix: Void Linux runit service name for BlueZ is 'bluetoothd'
 # ==============================================================================
 
 set -euo pipefail
@@ -197,7 +197,7 @@ mount --rbind /dev /mnt/dev; mount --rbind /proc /mnt/proc; mount --rbind /sys /
 cp /etc/resolv.conf /mnt/etc/resolv.conf
 cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
 
-# Exact package list with fixed Void Linux names
+# Exact package list
 CORE_PKGS="base-system linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel intel-ucode \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
@@ -266,7 +266,8 @@ done
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Void --recheck
 grub-mkconfig -o /boot/grub/grub.cfg
 
-for s in dbus elogind NetworkManager bluetooth cupsd tlp zramen chronyd apparmor gdm udevd; do
+# FIXED: 'bluetooth' changed to 'bluetoothd'
+for s in dbus elogind NetworkManager bluetoothd cupsd tlp zramen chronyd apparmor gdm udevd; do
     [ -d "/etc/sv/$s" ] && ln -sfn "/etc/sv/$s" /etc/runit/runsvdir/default/
 done
 
@@ -283,7 +284,6 @@ chmod +x custom-overlay/usr/bin/void-trading-install
 sed -i "s|__REPO_URL__|$REPO_URL|g" custom-overlay/usr/bin/void-trading-install
 
 echo "==> [4/6] Defining finalized package list for the ISO..."
-# Void Linux verified package list
 ALL_PKGS="linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel intel-ucode \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
@@ -306,7 +306,6 @@ DUMMY_ROOT=$(mktemp -d)
 mkdir -p "$DUMMY_ROOT/var/db/xbps/keys"
 cp /var/db/xbps/keys/* "$DUMMY_ROOT/var/db/xbps/keys/" 2>/dev/null || true
 
-# Build XBPS command with all necessary repositories
 XBPS_CMD="sudo env XBPS_ARCH=x86_64 xbps-install -r $DUMMY_ROOT -c /var/cache/xbps -R $REPO_URL/current -R $REPO_URL/current/nonfree -R $REPO_URL/current/multilib -R $REPO_URL/current/multilib/nonfree"
 
 echo "    Syncing repository metadata to test environment..."
@@ -335,11 +334,12 @@ fi
 # ==============================================================================
 
 echo "==> [5/6] Baking the ISO..."
+# FIXED: 'bluetooth' changed to 'bluetoothd'
 sudo ./mklive.sh \
     -a x86_64 \
     -o hp-void-gnome-trading.iso \
     -v linux-mainline \
-    -S "dbus elogind NetworkManager gdm qemu-ga bluetooth" \
+    -S "dbus elogind NetworkManager gdm qemu-ga bluetoothd" \
     -p "$ALL_PKGS" \
     -r "$REPO_URL/current" \
     -r "$REPO_URL/current/nonfree" \
