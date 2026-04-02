@@ -2,8 +2,7 @@
 # ==============================================================================
 # VOID LINUX CUSTOM ISO BUILDER: HP 15 / Universal (No NVIDIA)
 # Features: GNOME, PipeWire, AppArmor, ZRAM, Chrony, LVM+LUKS
-# Repos: Free, Non-Free, Multilib, Multilib-Non-Free
-# Firmware: All CPU/Network microcode and blobs (Strictly NO NVIDIA)
+# Verification: Includes Preflight Package Dry-Run Checker
 # ==============================================================================
 
 set -euo pipefail
@@ -188,7 +187,6 @@ else
         echo "[!] CRITICAL: No internet connection detected."
         exit 1
     fi
-    # Include ALL Free, Non-Free, and Multilib Repos
     REPO_FLAGS="-R __REPO_URL__/current -R __REPO_URL__/current/nonfree -R __REPO_URL__/current/multilib -R __REPO_URL__/current/multilib/nonfree"
 fi
 
@@ -199,11 +197,11 @@ mount --rbind /dev /mnt/dev; mount --rbind /proc /mnt/proc; mount --rbind /sys /
 cp /etc/resolv.conf /mnt/etc/resolv.conf
 cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
 
-# Exact package list (Broad Firmware, NO NVIDIA, All Repos)
+# Exact package list (Removed mesa-vdpau)
 CORE_PKGS="base-system linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel intel-ucode \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
-mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader mesa-vdpau libva-utils vulkan-tools \
+mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils vulkan-tools \
 elogind dbus polkit NetworkManager network-manager-applet bluez blueman \
 cups cups-filters system-config-printer xdg-user-dirs xdg-utils gvfs gvfs-mtp gvfs-smb bash-completion \
 gnome-core gnome-terminal gnome-control-center gnome-system-monitor gnome-disk-utility gnome-tweaks \
@@ -253,9 +251,6 @@ sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
 sed -i "s/AutomaticLogin=anon/AutomaticLogin=$SYS_USER/" /etc/gdm/custom.conf
 
-# ---------------------------------------------------------
-# CRITICAL BOOT AND GRUB CONFIGURATION (AppArmor & AMD)
-# ---------------------------------------------------------
 [ -f /etc/default/grub ] || touch /etc/default/grub
 sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="loglevel=4 apparmor=1 security=apparmor amd_pstate=active"/' /etc/default/grub
 grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub || echo 'GRUB_CMDLINE_LINUX_DEFAULT="loglevel=4 apparmor=1 security=apparmor amd_pstate=active"' >> /etc/default/grub
@@ -288,10 +283,11 @@ chmod +x custom-overlay/usr/bin/void-trading-install
 sed -i "s|__REPO_URL__|$REPO_URL|g" custom-overlay/usr/bin/void-trading-install
 
 echo "==> [4/6] Defining finalized package list for the ISO..."
+# Note: mesa-vdpau removed as it is obsolete/unavailable
 ALL_PKGS="linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd linux-firmware-intel intel-ucode \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
-mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader mesa-vdpau libva-utils vulkan-tools \
+mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils vulkan-tools \
 elogind dbus polkit NetworkManager network-manager-applet bluez blueman \
 cups cups-filters system-config-printer xdg-user-dirs xdg-utils gvfs gvfs-mtp gvfs-smb bash-completion \
 gnome-core gnome-terminal gnome-control-center gnome-system-monitor gnome-disk-utility gnome-tweaks \
@@ -301,8 +297,45 @@ pipewire wireplumber alsa-pipewire alsa-ucm-conf libspa-bluetooth pipewire-pulse
 flatpak noto-fonts noto-fonts-ttf noto-fonts-emoji ttf-dejavu dosfstools ntfs-3g exfatprogs \
 cryptsetup lvm2 grub-x86_64-efi sudo parted e2fsprogs gdm qemu-ga"
 
+
+# ==============================================================================
+# NEW: PREFLIGHT PACKAGE VERIFICATION
+# ==============================================================================
+echo "==> [4.5/6] Running Preflight Package Verification..."
+DUMMY_ROOT=$(mktemp -d)
+mkdir -p "$DUMMY_ROOT/var/db/xbps/keys"
+cp /var/db/xbps/keys/* "$DUMMY_ROOT/var/db/xbps/keys/" 2>/dev/null || true
+
+# Build XBPS command with all necessary repositories
+XBPS_CMD="sudo env XBPS_ARCH=x86_64 xbps-install -r $DUMMY_ROOT -c /var/cache/xbps -R $REPO_URL/current -R $REPO_URL/current/nonfree -R $REPO_URL/current/multilib -R $REPO_URL/current/multilib/nonfree"
+
+echo "    Syncing repository metadata to test environment..."
+$XBPS_CMD -S > /dev/null
+
+echo "    Verifying availability of all defined packages..."
+MISSING_PKGS=""
+for pkg in $ALL_PKGS; do
+    if ! $XBPS_CMD -n "$pkg" > /dev/null 2>&1; then
+        MISSING_PKGS="$MISSING_PKGS $pkg"
+    fi
+done
+
+sudo rm -rf "$DUMMY_ROOT"
+
+if [ -n "$MISSING_PKGS" ]; then
+    echo "    [!] CRITICAL ERROR: The following packages do NOT exist in the selected repositories:"
+    for mpkg in $MISSING_PKGS; do
+        echo "        - $mpkg"
+    done
+    echo "    [!] Build aborted to save time. Please fix the ALL_PKGS and CORE_PKGS lists."
+    exit 1
+else
+    echo "    [+] All packages verified successfully. Proceeding to build."
+fi
+# ==============================================================================
+
+
 echo "==> [5/6] Baking the ISO..."
-# Include ALL repos in the build environment to fetch multilib and nonfree packages
 sudo ./mklive.sh \
     -a x86_64 \
     -o hp-void-gnome-trading.iso \
