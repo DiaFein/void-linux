@@ -101,14 +101,14 @@ rm -rf custom-overlay
 mkdir -p custom-overlay/etc/gdm custom-overlay/usr/bin custom-overlay/etc/skel
 
 # Live ISO Autologin Config
-cat <<EOF > custom-overlay/etc/gdm/custom.conf
+cat << 'EOF' > custom-overlay/etc/gdm/custom.conf
 [daemon]
 AutomaticLoginEnable=True
 AutomaticLogin=anon
 WaylandEnable=true
 EOF
 
-cat <<EOF > custom-overlay/etc/issue
+cat << 'EOF' > custom-overlay/etc/issue
 \S \r (\l)
 ==================================================
  Welcome to the AMD-Optimized Void Live System!
@@ -265,7 +265,7 @@ mkdir -p /etc/sysctl.d /etc/modules-load.d /etc/security/limits.d /etc/default /
 echo "$HOST_NAME" > /etc/hostname
 echo "cryptroot UUID=$CRYPT_UUID none luks,discard" > /etc/crypttab
 
-cat <<FSTAB > /etc/fstab
+cat << 'FSTAB' > /etc/fstab
 UUID=$BTRFS_UUID  /             btrfs   $BTRFS_OPTS,subvol=@ 0 0
 UUID=$BTRFS_UUID  /home         btrfs   $BTRFS_OPTS,subvol=@home 0 0
 UUID=$BTRFS_UUID  /var/cache    btrfs   $BTRFS_OPTS,subvol=@cache 0 0
@@ -276,6 +276,10 @@ UUID=$EFI_UUID    /boot/efi     vfat    defaults 0 2
 tmpfs             /tmp          tmpfs   defaults,noatime,mode=1777 0 0
 tmpfs             /var/tmp      tmpfs   defaults,noatime,mode=1777 0 0
 FSTAB
+sed -i "s|\$BTRFS_UUID|$BTRFS_UUID|g" /etc/fstab
+sed -i "s|\$BTRFS_OPTS|$BTRFS_OPTS|g" /etc/fstab
+sed -i "s|\$BOOT_UUID|$BOOT_UUID|g" /etc/fstab
+sed -i "s|\$EFI_UUID|$EFI_UUID|g" /etc/fstab
 
 echo "en_US.UTF-8 UTF-8" >> /etc/default/libc-locales; xbps-reconfigure -f glibc-locales
 ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime
@@ -342,4 +346,40 @@ echo 'omit_dracutmodules+=" nfs cifs network "' > /etc/dracut.conf.d/omit-net.co
 
 for k_dir in /lib/modules/*; do
     KVER=$(basename "$k_dir")
-    dracut -f --kver "$K
+    dracut -f --kver "$KVER"
+done
+
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Void --recheck
+grub-mkconfig -o /boot/grub/grub.cfg
+
+for s in dbus elogind NetworkManager cupsd tlp zramen chronyd apparmor gdm udevd; do
+    [ -d "/etc/sv/$s" ] && ln -sfn "/etc/sv/$s" /etc/runit/runsvdir/default/
+done
+
+xbps-remove -Fy tracker3-miners || true
+CHROOT_EOF
+
+umount -R /mnt
+echo "======================================================================"
+echo "   INSTALL COMPLETE: Reboot, enter LUKS pass, and log in.             "
+echo "======================================================================"
+EOF_TRADER
+
+chmod +x custom-overlay/usr/bin/void-trading-install
+sed -i "s|__REPO_URL__|$REPO_URL|g" custom-overlay/usr/bin/void-trading-install
+sed -i "s|__ALL_PKGS__|$ALL_PKGS|g" custom-overlay/usr/bin/void-trading-install
+
+echo "==> [6/6] Baking the ISO..."
+sudo ./mklive.sh \
+    -a x86_64 \
+    -o amd-void-gnome-trading.iso \
+    -v linux-mainline \
+    -S "dbus elogind NetworkManager gdm qemu-ga" \
+    -p "$ALL_PKGS" \
+    -r "$REPO_URL/current" \
+    -r "$REPO_URL/current/nonfree" \
+    -r "$REPO_URL/current/multilib" \
+    -r "$REPO_URL/current/multilib/nonfree" \
+    -I custom-overlay
+
+echo "==> SUCCESS! Your ISO is at: $WORKDIR/void-mklive/amd-void-gnome-trading.iso"
