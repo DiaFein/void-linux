@@ -42,8 +42,8 @@ if [ "$USE_FASTEST_MIRROR" = "true" ]; then
     echo "    [+] Selected Mirror: $REPO_URL"
 fi
 
-# Define the package list (Added rtkit and pavucontrol for Audio)
-ALL_PKGS="linux-mainline linux-mainline-headers \
+# Fixed: Added base-system to the very beginning!
+ALL_PKGS="base-system linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
 mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils \
