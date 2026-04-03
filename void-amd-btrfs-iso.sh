@@ -46,15 +46,15 @@ fi
 ALL_PKGS="linux-mainline linux-mainline-headers dkms \
 linux-firmware linux-firmware-network linux-firmware-amd \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
-mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader mesa-vdpau libva-utils vulkan-tools \
+mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils \
 xf86-video-amdgpu xorg-server \
 elogind dbus polkit NetworkManager network-manager-applet \
 cups cups-filters system-config-printer xdg-user-dirs xdg-utils gvfs gvfs-mtp gvfs-smb bash-completion \
 gnome-core gnome-terminal gnome-control-center gnome-system-monitor gnome-disk-utility gnome-tweaks \
-nautilus file-roller eog evince gnome-shell-extensions tlp tlp-pd tlp-rdw powertop zramen cpupower \
-curl wget rsync nftables chrony apparmor apparmor-utils chromium htop btop neovim nano git unzip p7zip \
-pipewire wireplumber alsa-pipewire alsa-ucm-conf pipewire-pulse brightnessctl acpi lm_sensors \
-flatpak noto-fonts noto-fonts-ttf noto-fonts-emoji ttf-dejavu dosfstools ntfs-3g exfatprogs \
+nautilus file-roller eog evince gnome-shell-extensions tlp tlp-rdw powertop zramen cpupower \
+curl wget rsync nftables chrony apparmor chromium htop btop neovim nano git unzip p7zip \
+pipewire wireplumber alsa-pipewire alsa-ucm-conf brightnessctl acpi lm_sensors \
+flatpak noto-fonts-ttf noto-fonts-emoji dejavu-fonts-ttf dosfstools ntfs-3g exfatprogs \
 cryptsetup btrfs-progs grub-x86_64-efi sudo parted e2fsprogs gdm qemu-ga"
 
 echo "==> [3/6] Running Pre-flight Package Availability Check..."
@@ -198,7 +198,6 @@ btrfs subvolume create /mnt/@snapshots
 umount /mnt
 
 echo "[*] Mounting filesystems (Hierarchical strict creation)..."
-# ADDED global commit=120 to base options
 BTRFS_OPTS="noatime,compress=zstd:1,ssd,discard=async,space_cache=v2,commit=120"
 
 mount -o "$BTRFS_OPTS",subvol=@ /dev/mapper/cryptroot /mnt
