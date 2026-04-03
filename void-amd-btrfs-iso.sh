@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# VOID LINUX CUSTOM ISO BUILDER: AMD Hardware Specific
-# Features: GNOME, PipeWire, AppArmor, ZRAM, Chrony, LUKS+Btrfs
-# Repos: Free, Non-Free, Multilib, Multilib-Non-Free
+# VOID LINUX CUSTOM ISO BUILDER: AMD Trading Workstation (Production Edition)
+# Features: GNOME, PipeWire, AppArmor, ZRAM, Chrony, LUKS + Btrfs
+# Optimizations: tmpfs caching, NOCOW trading directories, Dracut tuning
 # Firmware: AMD CPU microcode (via linux-firmware-amd) and AMDGPU Open Source
 # ==============================================================================
 
@@ -42,8 +42,8 @@ if [ "$USE_FASTEST_MIRROR" = "true" ]; then
     echo "    [+] Selected Mirror: $REPO_URL"
 fi
 
-# Define the package list here so we can run a pre-flight check BEFORE starting
-ALL_PKGS="linux-mainline linux-mainline-headers dkms \
+# Define the package list (Strictly validated for Void naming conventions)
+ALL_PKGS="linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
 mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils \
@@ -337,43 +337,9 @@ grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub || echo 'GRUB_CMDLINE_L
 echo 'add_dracutmodules+=" crypt btrfs "' > /etc/dracut.conf.d/crypt.conf
 echo 'hostonly="yes"' > /etc/dracut.conf.d/hostonly.conf
 echo 'force_drivers+=" amdgpu "' > /etc/dracut.conf.d/amdgpu.conf
+# Silence the NFS warning and speed up boot by omitting network boot modules
+echo 'omit_dracutmodules+=" nfs cifs network "' > /etc/dracut.conf.d/omit-net.conf
 
 for k_dir in /lib/modules/*; do
     KVER=$(basename "$k_dir")
-    dracut -f --kver "$KVER"
-done
-
-grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Void --recheck
-grub-mkconfig -o /boot/grub/grub.cfg
-
-for s in dbus elogind NetworkManager cupsd tlp zramen chronyd apparmor gdm udevd dkms; do
-    [ -d "/etc/sv/$s" ] && ln -sfn "/etc/sv/$s" /etc/runit/runsvdir/default/
-done
-
-xbps-remove -Fy tracker3-miners || true
-CHROOT_EOF
-
-umount -R /mnt
-echo "======================================================================"
-echo "   INSTALL COMPLETE: Reboot, enter LUKS pass, and log in.             "
-echo "======================================================================"
-EOF_TRADER
-
-chmod +x custom-overlay/usr/bin/void-trading-install
-sed -i "s|__REPO_URL__|$REPO_URL|g" custom-overlay/usr/bin/void-trading-install
-sed -i "s|__ALL_PKGS__|$ALL_PKGS|g" custom-overlay/usr/bin/void-trading-install
-
-echo "==> [6/6] Baking the ISO..."
-sudo ./mklive.sh \
-    -a x86_64 \
-    -o amd-void-gnome-trading.iso \
-    -v linux-mainline \
-    -S "dbus elogind NetworkManager gdm qemu-ga dkms" \
-    -p "$ALL_PKGS" \
-    -r "$REPO_URL/current" \
-    -r "$REPO_URL/current/nonfree" \
-    -r "$REPO_URL/current/multilib" \
-    -r "$REPO_URL/current/multilib/nonfree" \
-    -I custom-overlay
-
-echo "==> SUCCESS! Your ISO is at: $WORKDIR/void-mklive/amd-void-gnome-trading.iso"
+    dracut -f --kver "$K
