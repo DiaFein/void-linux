@@ -42,7 +42,7 @@ if [ "$USE_FASTEST_MIRROR" = "true" ]; then
     echo "    [+] Selected Mirror: $REPO_URL"
 fi
 
-# Define the package list (Strictly validated for Void naming conventions)
+# Define the package list (Added rtkit and pavucontrol for Audio)
 ALL_PKGS="linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
@@ -53,7 +53,7 @@ cups cups-filters system-config-printer xdg-user-dirs xdg-utils gvfs gvfs-mtp gv
 gnome-core gnome-terminal gnome-control-center gnome-system-monitor gnome-disk-utility gnome-tweaks \
 nautilus file-roller eog evince gnome-shell-extensions tlp tlp-rdw powertop zramen cpupower \
 curl wget rsync nftables chrony apparmor chromium htop btop neovim nano git unzip p7zip \
-pipewire wireplumber alsa-pipewire alsa-ucm-conf brightnessctl acpi lm_sensors \
+pipewire wireplumber alsa-pipewire alsa-ucm-conf brightnessctl acpi lm_sensors rtkit pavucontrol \
 flatpak noto-fonts-ttf noto-fonts-emoji dejavu-fonts-ttf dosfstools ntfs-3g exfatprogs \
 cryptsetup btrfs-progs grub-x86_64-efi sudo parted e2fsprogs gdm qemu-ga"
 
@@ -99,6 +99,13 @@ make
 echo "==> [5/6] Setting up Overlay and Injected Scripts..."
 rm -rf custom-overlay
 mkdir -p custom-overlay/etc/gdm custom-overlay/usr/bin custom-overlay/etc/skel
+
+# Configure PipeWire XDG Autostart for the Live ISO
+echo "    [+] Configuring Global Audio Autostart (PipeWire)..."
+mkdir -p custom-overlay/etc/xdg/autostart
+ln -sf /usr/share/applications/pipewire.desktop custom-overlay/etc/xdg/autostart/pipewire.desktop
+ln -sf /usr/share/applications/pipewire-pulse.desktop custom-overlay/etc/xdg/autostart/pipewire-pulse.desktop
+ln -sf /usr/share/applications/wireplumber.desktop custom-overlay/etc/xdg/autostart/wireplumber.desktop
 
 # Live ISO Autologin Config
 cat << 'EOF' > custom-overlay/etc/gdm/custom.conf
@@ -207,7 +214,7 @@ mkdir -p /mnt/home
 mkdir -p /mnt/var/{cache,log,tmp,db/xbps/keys}
 mkdir -p /mnt/tmp
 mkdir -p /mnt/.snapshots
-mkdir -p /mnt/boot/efi
+mkdir -p /mnt/boot  
 mkdir -p /mnt/etc/xbps.d
 
 mount -o "$BTRFS_OPTS",subvol=@home /dev/mapper/cryptroot /mnt/home
@@ -216,6 +223,7 @@ mount -o "$BTRFS_OPTS",subvol=@log /dev/mapper/cryptroot /mnt/var/log
 mount -o "$BTRFS_OPTS",subvol=@snapshots /dev/mapper/cryptroot /mnt/.snapshots
 
 mount "$BOOT" /mnt/boot
+mkdir -p /mnt/boot/efi
 mount "$EFI" /mnt/boot/efi
 
 BOOT_UUID=$(blkid -s UUID -o value "$BOOT")
@@ -299,17 +307,24 @@ sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 sed -i "s/AutomaticLogin=anon/AutomaticLogin=$SYS_USER/" /etc/gdm/custom.conf
 
 # ---------------------------------------------------------
+# AUDIO AUTOSTART (PIPEWIRE)
+# ---------------------------------------------------------
+echo "[*] Setting up Global XDG Autostart for PipeWire..."
+mkdir -p /etc/xdg/autostart
+ln -sf /usr/share/applications/pipewire.desktop /etc/xdg/autostart/pipewire.desktop
+ln -sf /usr/share/applications/pipewire-pulse.desktop /etc/xdg/autostart/pipewire-pulse.desktop
+ln -sf /usr/share/applications/wireplumber.desktop /etc/xdg/autostart/wireplumber.desktop
+
+# ---------------------------------------------------------
 # TRADING PERFORMANCE TUNING (NOCOW)
 # ---------------------------------------------------------
 echo "[*] Applying NOCOW attributes to high-I/O directories..."
 mkdir -p /home/$SYS_USER/{trading-data,.cache,.config/chromium}
 
-# Disable Copy-on-Write to prevent fragmentation and latency
 chattr +C /home/$SYS_USER/trading-data
 chattr +C /home/$SYS_USER/.cache
 chattr +C /home/$SYS_USER/.config/chromium
 
-# Ensure correct ownership
 chown -R $SYS_USER:$SYS_USER /home/$SYS_USER
 
 # ---------------------------------------------------------
@@ -341,7 +356,6 @@ grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub || echo 'GRUB_CMDLINE_L
 echo 'add_dracutmodules+=" crypt btrfs "' > /etc/dracut.conf.d/crypt.conf
 echo 'hostonly="yes"' > /etc/dracut.conf.d/hostonly.conf
 echo 'force_drivers+=" amdgpu "' > /etc/dracut.conf.d/amdgpu.conf
-# Silence the NFS warning and speed up boot by omitting network boot modules
 echo 'omit_dracutmodules+=" nfs cifs network "' > /etc/dracut.conf.d/omit-net.conf
 
 for k_dir in /lib/modules/*; do
