@@ -16,7 +16,6 @@ USE_FASTEST_MIRROR="true"
 # ---------------------
 
 echo "==> [1/6] Running Host Tool Checks..."
-# Added xbps-query as it is strictly required for the pre-flight package check
 REQUIRED_CMDS="git make curl tar xz sudo gzip bzip2 awk sed ping xbps-query"
 MISSING_CMDS=""
 for cmd in $REQUIRED_CMDS; do
@@ -44,7 +43,6 @@ if [ "$USE_FASTEST_MIRROR" = "true" ]; then
 fi
 
 # Define the package list here so we can run a pre-flight check BEFORE starting
-# REMOVED: amd-ucode, bluez, blueman, libspa-bluetooth
 ALL_PKGS="linux-mainline linux-mainline-headers dkms \
 linux-firmware linux-firmware-network linux-firmware-amd \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
@@ -67,7 +65,6 @@ REPO_ARGS="--repository=$REPO_URL/current --repository=$REPO_URL/current/nonfree
 MISSING_REPO_PKGS=""
 
 for pkg in "${PKG_ARRAY[@]}"; do
-    # Query the remote repo directly to ensure the package exists
     if ! xbps-query -R $REPO_ARGS -p pkgver "$pkg" >/dev/null 2>&1; then
         MISSING_REPO_PKGS="$MISSING_REPO_PKGS $pkg"
     fi
@@ -201,13 +198,14 @@ btrfs subvolume create /mnt/@snapshots
 umount /mnt
 
 echo "[*] Mounting filesystems (Hierarchical strict creation)..."
-BTRFS_OPTS="noatime,compress=zstd:1,ssd,discard=async,space_cache=v2"
+# ADDED global commit=120 to base options
+BTRFS_OPTS="noatime,compress=zstd:1,ssd,discard=async,space_cache=v2,commit=120"
 
-mount -o "$BTRFS_OPTS",commit=120,subvol=@ /dev/mapper/cryptroot /mnt
+mount -o "$BTRFS_OPTS",subvol=@ /dev/mapper/cryptroot /mnt
 
 # Clean explicit directory creation
 mkdir -p /mnt/home
-mkdir -p /mnt/var/{cache,log,db/xbps/keys}
+mkdir -p /mnt/var/{cache,log,tmp,db/xbps/keys}
 mkdir -p /mnt/tmp
 mkdir -p /mnt/.snapshots
 mkdir -p /mnt/boot/efi
@@ -244,7 +242,6 @@ else
         echo "[!] CRITICAL: No internet connection detected."
         exit 1
     fi
-    # Include ALL Free, Non-Free, and Multilib Repos
     REPO_FLAGS="-R __REPO_URL__/current -R __REPO_URL__/current/nonfree -R __REPO_URL__/current/multilib -R __REPO_URL__/current/multilib/nonfree"
 fi
 
@@ -270,7 +267,7 @@ echo "$HOST_NAME" > /etc/hostname
 echo "cryptroot UUID=$CRYPT_UUID none luks,discard" > /etc/crypttab
 
 cat <<FSTAB > /etc/fstab
-UUID=$BTRFS_UUID  /             btrfs   $BTRFS_OPTS,commit=120,subvol=@ 0 0
+UUID=$BTRFS_UUID  /             btrfs   $BTRFS_OPTS,subvol=@ 0 0
 UUID=$BTRFS_UUID  /home         btrfs   $BTRFS_OPTS,subvol=@home 0 0
 UUID=$BTRFS_UUID  /var/cache    btrfs   $BTRFS_OPTS,subvol=@cache 0 0
 UUID=$BTRFS_UUID  /var/log      btrfs   $BTRFS_OPTS,subvol=@log 0 0
@@ -278,6 +275,7 @@ UUID=$BTRFS_UUID  /.snapshots   btrfs   $BTRFS_OPTS,subvol=@snapshots 0 0
 UUID=$BOOT_UUID   /boot         ext4    defaults 0 2
 UUID=$EFI_UUID    /boot/efi     vfat    defaults 0 2
 tmpfs             /tmp          tmpfs   defaults,noatime,mode=1777 0 0
+tmpfs             /var/tmp      tmpfs   defaults,noatime,mode=1777 0 0
 FSTAB
 
 echo "en_US.UTF-8 UTF-8" >> /etc/default/libc-locales; xbps-reconfigure -f glibc-locales
@@ -290,13 +288,26 @@ if [ "$INSTALL_SOURCE" = "1" ]; then
 fi
 
 pwconv; grpconv
-# Removed bluetooth group
 useradd -m -G wheel,audio,video,input -s /bin/bash "$SYS_USER"
 echo "$SYS_USER:$SYS_PASS" | chpasswd -c SHA512
 echo "root:$SYS_PASS" | chpasswd -c SHA512
 sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
 sed -i "s/AutomaticLogin=anon/AutomaticLogin=$SYS_USER/" /etc/gdm/custom.conf
+
+# ---------------------------------------------------------
+# TRADING PERFORMANCE TUNING (NOCOW)
+# ---------------------------------------------------------
+echo "[*] Applying NOCOW attributes to high-I/O directories..."
+mkdir -p /home/$SYS_USER/{trading-data,.cache,.config/chromium}
+
+# Disable Copy-on-Write to prevent fragmentation and latency
+chattr +C /home/$SYS_USER/trading-data
+chattr +C /home/$SYS_USER/.cache
+chattr +C /home/$SYS_USER/.config/chromium
+
+# Ensure correct ownership
+chown -R $SYS_USER:$SYS_USER /home/$SYS_USER
 
 # ---------------------------------------------------------
 # BTRFS SNAPSHOT HOOK
@@ -336,7 +347,6 @@ done
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=Void --recheck
 grub-mkconfig -o /boot/grub/grub.cfg
 
-# Removed bluetooth service
 for s in dbus elogind NetworkManager cupsd tlp zramen chronyd apparmor gdm udevd dkms; do
     [ -d "/etc/sv/$s" ] && ln -sfn "/etc/sv/$s" /etc/runit/runsvdir/default/
 done
@@ -355,7 +365,6 @@ sed -i "s|__REPO_URL__|$REPO_URL|g" custom-overlay/usr/bin/void-trading-install
 sed -i "s|__ALL_PKGS__|$ALL_PKGS|g" custom-overlay/usr/bin/void-trading-install
 
 echo "==> [6/6] Baking the ISO..."
-# Removed bluetooth from -S parameter
 sudo ./mklive.sh \
     -a x86_64 \
     -o amd-void-gnome-trading.iso \
