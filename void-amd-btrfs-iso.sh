@@ -51,7 +51,7 @@ xf86-video-amdgpu xorg-server \
 elogind dbus polkit NetworkManager network-manager-applet \
 cups cups-filters system-config-printer xdg-user-dirs xdg-utils gvfs gvfs-mtp gvfs-smb bash-completion \
 gnome-core gnome-terminal gnome-control-center gnome-system-monitor gnome-disk-utility gnome-tweaks \
-nautilus file-roller eog evince gnome-shell-extensions tlp tlp-rdw powertop zramen cpupower \
+nautilus file-roller eog evince gnome-shell-extensions tlp tlp-pd tlp-rdw powertop zramen cpupower \
 curl wget rsync nftables chrony apparmor apparmor-utils chromium htop btop neovim nano git unzip p7zip \
 pipewire wireplumber alsa-pipewire alsa-ucm-conf pipewire-pulse brightnessctl acpi lm_sensors \
 flatpak noto-fonts noto-fonts-ttf noto-fonts-emoji ttf-dejavu dosfstools ntfs-3g exfatprogs \
