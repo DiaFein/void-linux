@@ -2,7 +2,6 @@
 set -euo pipefail
 
 # --- STANDALONE CONFIGURATION ---
-REPO_URL="https://repo-fastly.voidlinux.org"
 # WAYLAND ONLY: Removed xorg-server and xf86-video-amdgpu, kept xorg-server-xwayland
 ALL_PKGS="base-system linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd \
@@ -27,6 +26,44 @@ clear
 echo "======================================================================"
 echo "      HIGH-PERFORMANCE DEPLOYMENT (LUKS + BTRFS + APPARMOR)           "
 echo "======================================================================"
+
+echo "[*] Selecting Void Linux Repository Mirror..."
+REPO_URL="https://repo-default.voidlinux.org"
+echo "    Pinging mirrors for fastest response..."
+BEST_TIME=999
+for m in "https://repo-default.voidlinux.org" "https://repo-us.voidlinux.org" "https://repo-fastly.voidlinux.org"; do
+    # Using awk to handle floating point comparisons reliably
+    TEST_TIME=$(LC_NUMERIC=C curl -s -o /dev/null -w "%{time_total}" -m 2 "$m/current/x86_64-repodata" || echo "999")
+    if awk "BEGIN {exit !($TEST_TIME < $BEST_TIME)}"; then
+        BEST_TIME=$TEST_TIME
+        REPO_URL=$m
+    fi
+done
+echo "    [+] Selected Mirror: $REPO_URL"
+
+echo "[*] Running Pre-flight Package Availability Check..."
+PKG_ARRAY=($ALL_PKGS)
+echo "    Validating ${#PKG_ARRAY[@]} packages against selected mirror..."
+
+REPO_ARGS="--repository=$REPO_URL/current --repository=$REPO_URL/current/nonfree --repository=$REPO_URL/current/multilib --repository=$REPO_URL/current/multilib/nonfree"
+MISSING_REPO_PKGS=""
+
+for pkg in "${PKG_ARRAY[@]}"; do
+    if ! xbps-query -R $REPO_ARGS -p pkgver "$pkg" >/dev/null 2>&1; then
+        MISSING_REPO_PKGS="$MISSING_REPO_PKGS $pkg"
+    fi
+done
+
+if [ -n "$MISSING_REPO_PKGS" ]; then
+    echo "    [!] FATAL: The following packages are NOT available in the repositories:"
+    for mp in $MISSING_REPO_PKGS; do
+        echo "        - $mp"
+    done
+    echo "    [!] Please correct the package names before continuing."
+    exit 1
+fi
+echo "    [+] All packages verified successfully."
+echo "----------------------------------------------------------------------"
 
 lsblk -d -o NAME,SIZE,FSTYPE,MODEL | grep -v "loop"
 read -rp "Target disk (e.g. /dev/nvme0n1): " DISK
