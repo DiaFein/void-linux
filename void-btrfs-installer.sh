@@ -3,12 +3,12 @@ set -euo pipefail
 
 # --- STANDALONE CONFIGURATION ---
 REPO_URL="https://repo-fastly.voidlinux.org"
-# Fixed: Added base-system to the very beginning!
+# WAYLAND ONLY: Removed xorg-server and xf86-video-amdgpu, kept xorg-server-xwayland
 ALL_PKGS="base-system linux-mainline linux-mainline-headers \
 linux-firmware linux-firmware-network linux-firmware-amd \
 void-repo-nonfree void-repo-multilib void-repo-multilib-nonfree \
 mesa mesa-dri mesa-vaapi mesa-vulkan-radeon vulkan-loader libva-utils \
-xf86-video-amdgpu xorg-server \
+xorg-server-xwayland \
 elogind dbus polkit NetworkManager network-manager-applet \
 cups cups-filters system-config-printer xdg-user-dirs xdg-utils gvfs gvfs-mtp gvfs-smb bash-completion \
 gnome-core gnome-terminal gnome-control-center gnome-system-monitor gnome-disk-utility gnome-tweaks \
@@ -63,10 +63,10 @@ mkfs.ext4 -F "$BOOT"
 
 echo "[*] Setting up Encryption & Btrfs..."
 printf "%s" "$LUKS_PASS" | cryptsetup luksFormat "$ROOT_PART" -
-printf "%s" "$LUKS_PASS" | cryptsetup open "$ROOT_PART" cryptroot -
+printf "%s" "$LUKS_PASS" | cryptsetup open "$ROOT_PART" EBRAM -
 
-mkfs.btrfs -f /dev/mapper/cryptroot
-mount /dev/mapper/cryptroot /mnt
+mkfs.btrfs -f /dev/mapper/EBRAM
+mount /dev/mapper/EBRAM /mnt
 
 echo "[*] Creating Btrfs subvolumes..."
 btrfs subvolume create /mnt/@
@@ -79,9 +79,8 @@ umount /mnt
 echo "[*] Mounting filesystems (Hierarchical strict creation)..."
 BTRFS_OPTS="noatime,compress=zstd:1,ssd,discard=async,space_cache=v2,commit=120"
 
-mount -o "$BTRFS_OPTS",subvol=@ /dev/mapper/cryptroot /mnt
+mount -o "$BTRFS_OPTS",subvol=@ /dev/mapper/EBRAM /mnt
 
-# Clean explicit directory creation
 mkdir -p /mnt/home
 mkdir -p /mnt/var/{cache,log,tmp,db/xbps/keys}
 mkdir -p /mnt/tmp
@@ -89,10 +88,10 @@ mkdir -p /mnt/.snapshots
 mkdir -p /mnt/boot  
 mkdir -p /mnt/etc/xbps.d
 
-mount -o "$BTRFS_OPTS",subvol=@home /dev/mapper/cryptroot /mnt/home
-mount -o "$BTRFS_OPTS",subvol=@cache /dev/mapper/cryptroot /mnt/var/cache
-mount -o "$BTRFS_OPTS",subvol=@log /dev/mapper/cryptroot /mnt/var/log
-mount -o "$BTRFS_OPTS",subvol=@snapshots /dev/mapper/cryptroot /mnt/.snapshots
+mount -o "$BTRFS_OPTS",subvol=@home /dev/mapper/EBRAM /mnt/home
+mount -o "$BTRFS_OPTS",subvol=@cache /dev/mapper/EBRAM /mnt/var/cache
+mount -o "$BTRFS_OPTS",subvol=@log /dev/mapper/EBRAM /mnt/var/log
+mount -o "$BTRFS_OPTS",subvol=@snapshots /dev/mapper/EBRAM /mnt/.snapshots
 
 mount "$BOOT" /mnt/boot
 mkdir -p /mnt/boot/efi
@@ -101,7 +100,7 @@ mount "$EFI" /mnt/boot/efi
 BOOT_UUID=$(blkid -s UUID -o value "$BOOT")
 EFI_UUID=$(blkid -s UUID -o value "$EFI")
 CRYPT_UUID=$(blkid -s UUID -o value "$ROOT_PART")
-BTRFS_UUID=$(blkid -s UUID -o value /dev/mapper/cryptroot)
+BTRFS_UUID=$(blkid -s UUID -o value /dev/mapper/EBRAM)
 
 echo "ignorepkg=linux" > /mnt/etc/xbps.d/10-ignore.conf
 echo "ignorepkg=linux-headers" >> /mnt/etc/xbps.d/10-ignore.conf
@@ -133,17 +132,29 @@ cp -a /var/db/xbps/keys/* /mnt/var/db/xbps/keys/ || true
 echo "[*] Installing/Verifying system packages..."
 xbps-install -Sy -c /var/cache/xbps $REPO_FLAGS -r /mnt $ALL_PKGS
 
+# =========================================================
+# BULLETPROOF PASSWORD & USER CREATION (Executed on Host)
+# =========================================================
+echo "[*] Creating user and setting passwords..."
+chroot /mnt pwconv
+chroot /mnt grpconv
+chroot /mnt useradd -m -G wheel,audio,video,input -s /bin/bash "$SYS_USER"
+echo "$SYS_USER:$SYS_PASS" | chroot /mnt chpasswd -c SHA512
+echo "root:$SYS_PASS" | chroot /mnt chpasswd -c SHA512
+
+# Fix GDM Autologin strictly from host to ensure variable expansion
+sed -i "s/AutomaticLogin=anon/AutomaticLogin=$SYS_USER/" /mnt/etc/gdm/custom.conf
+
 echo "[*] Entering chroot for final configuration..."
 chroot /mnt /usr/bin/env HOST_NAME="$HOST_NAME" CRYPT_UUID="$CRYPT_UUID" \
     BTRFS_UUID="$BTRFS_UUID" BTRFS_OPTS="$BTRFS_OPTS" BOOT_UUID="$BOOT_UUID" \
-    EFI_UUID="$EFI_UUID" SYS_USER="$SYS_USER" SYS_PASS="$SYS_PASS" DISK="$DISK" \
-    INSTALL_SOURCE="$INSTALL_SOURCE" /bin/bash << 'CHROOT_EOF'
+    EFI_UUID="$EFI_UUID" SYS_USER="$SYS_USER" /bin/bash << 'CHROOT_EOF'
 set -euo pipefail
 
 mkdir -p /etc/sysctl.d /etc/modules-load.d /etc/security/limits.d /etc/default /etc/dracut.conf.d /usr/local/bin
 
 echo "$HOST_NAME" > /etc/hostname
-echo "cryptroot UUID=$CRYPT_UUID none luks,discard" > /etc/crypttab
+echo "EBRAM UUID=$CRYPT_UUID none luks,discard" > /etc/crypttab
 
 cat << 'FSTAB' > /etc/fstab
 UUID=$BTRFS_UUID  /             btrfs   $BTRFS_OPTS,subvol=@ 0 0
@@ -165,18 +176,12 @@ echo "en_US.UTF-8 UTF-8" >> /etc/default/libc-locales; xbps-reconfigure -f glibc
 ln -sf /usr/share/zoneinfo/Asia/Kolkata /etc/localtime
 sed -i 's/^#KEYMAP=.*/KEYMAP="us"/' /etc/rc.conf || echo 'KEYMAP="us"' >> /etc/rc.conf
 
-if [ "$INSTALL_SOURCE" = "1" ]; then
+if [ -e "/var/db/xbps/pkgdir/void-live" ]; then
     xbps-remove -Ry void-live >/dev/null 2>&1 || true
     userdel -f -r anon >/dev/null 2>&1 || true
 fi
 
-pwconv; grpconv
-useradd -m -G wheel,audio,video,input -s /bin/bash "$SYS_USER"
-echo "$SYS_USER:$SYS_PASS" | chpasswd -c SHA512
-echo "root:$SYS_PASS" | chpasswd -c SHA512
 sed -i 's/# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
-
-sed -i "s/AutomaticLogin=anon/AutomaticLogin=$SYS_USER/" /etc/gdm/custom.conf
 
 # ---------------------------------------------------------
 # AUDIO AUTOSTART (PIPEWIRE)
@@ -222,8 +227,8 @@ chmod +x /usr/local/bin/safe-update
 # CRITICAL BOOT AND GRUB CONFIGURATION 
 # ---------------------------------------------------------
 [ -f /etc/default/grub ] || touch /etc/default/grub
-sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="loglevel=4 apparmor=1 security=apparmor amdgpu.ppfeaturemask=0xffffffff rootflags=subvol=@"/' /etc/default/grub
-grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub || echo 'GRUB_CMDLINE_LINUX_DEFAULT="loglevel=4 apparmor=1 security=apparmor amdgpu.ppfeaturemask=0xffffffff rootflags=subvol=@"' >> /etc/default/grub
+sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=4 apparmor=1 security=apparmor amdgpu.ppfeaturemask=0xffffffff rd.luks.name=$CRYPT_UUID=EBRAM root=/dev/mapper/EBRAM rootflags=subvol=@\"|" /etc/default/grub
+grep -q "^GRUB_CMDLINE_LINUX_DEFAULT=" /etc/default/grub || echo "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=4 apparmor=1 security=apparmor amdgpu.ppfeaturemask=0xffffffff rd.luks.name=$CRYPT_UUID=EBRAM root=/dev/mapper/EBRAM rootflags=subvol=@\"" >> /etc/default/grub
 
 echo 'add_dracutmodules+=" crypt btrfs "' > /etc/dracut.conf.d/crypt.conf
 echo 'hostonly="yes"' > /etc/dracut.conf.d/hostonly.conf
