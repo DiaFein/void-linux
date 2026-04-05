@@ -1,7 +1,7 @@
 #!/bin/bash
 # ---------------------------------------------------------
-# Master Void Linux Performance & Recovery Toolkit v3.0
-# Includes: BTRFS Swap, Snapper, ZRAM, Plymouth (void10)
+# Master Void Linux Performance & Recovery Toolkit v4.0
+# Includes: BTRFS Swap, Snapper, ZRAM, Plymouth Selector
 # ---------------------------------------------------------
 
 # 0. Root Check
@@ -140,24 +140,54 @@ setup_zram() {
 }
 
 # ==========================================
-# FUNCTION: 4. Setup Plymouth & void10 Theme
+# FUNCTION: 4. Setup Plymouth & Theme Selector
 # ==========================================
 setup_plymouth() {
-    echo -e "\n🎨 --- Configuring Plymouth & void10 Theme ---"
+    echo -e "\n🎨 --- Configuring Plymouth & Boot Splash ---"
+
+    echo "Which theme would you like to install?"
+    echo "  1) void10              (Modern, animated Void logo by David-Castro16)"
+    echo "  2) void-plymouth-theme (Classic, minimal Void logo by ferrettim)"
+    echo "  3) Cancel"
+    read -p "Select a theme [1-3]: " theme_choice
+
+    case $theme_choice in
+        1) REPO_URL="https://github.com/David-Castro16/void10.git" ;;
+        2) REPO_URL="https://gitlab.com/ferrettim/void-plymouth-theme.git" ;;
+        3) return 0 ;;
+        *) echo "❌ Invalid choice."; return 1 ;;
+    esac
 
     echo "📦 Installing Plymouth and Git..."
     xbps-install -Sy plymouth git || { echo "❌ Failed to install plymouth/git"; return 1; }
 
-    if [ ! -d /usr/share/plymouth/themes/void10 ]; then
-        echo "⬇️ Cloning void10 Plymouth theme..."
-        cd /tmp || return 1
-        rm -rf void10
-        git clone --depth=1 https://github.com/David-Castro16/void10.git || { echo "❌ Failed to clone theme"; return 1; }
+    echo "⬇️ Downloading selected theme..."
+    cd /tmp || return 1
+    rm -rf plymouth-theme-repo
+    git clone --depth=1 "$REPO_URL" plymouth-theme-repo || { echo "❌ Failed to clone theme"; return 1; }
 
-        echo "📁 Installing theme..."
-        cp -r void10 /usr/share/plymouth/themes/
+    cd plymouth-theme-repo || return 1
+    
+    # Auto-detect the actual theme name and directory structure
+    PLYMOUTH_FILE=$(find . -name "*.plymouth" | head -n 1)
+    if [ -z "$PLYMOUTH_FILE" ]; then
+        echo "❌ Error: Could not find a .plymouth file in this repository."
+        return 1
+    fi
+    
+    THEME_NAME=$(basename "$PLYMOUTH_FILE" .plymouth)
+    THEME_DIR=$(dirname "$PLYMOUTH_FILE")
+
+    echo "📁 Installing '$THEME_NAME' to /usr/share/plymouth/themes/..."
+    
+    # Handle both root-level themes and nested-folder themes gracefully
+    if [ "$THEME_DIR" = "." ]; then
+        rm -rf "/usr/share/plymouth/themes/$THEME_NAME"
+        mkdir -p "/usr/share/plymouth/themes/$THEME_NAME"
+        cp -r ./* "/usr/share/plymouth/themes/$THEME_NAME/"
     else
-        echo "✔️ Theme already installed, skipping clone."
+        rm -rf "/usr/share/plymouth/themes/$THEME_NAME"
+        cp -r "$THEME_DIR" "/usr/share/plymouth/themes/"
     fi
 
     echo "⚙️ Configuring GRUB boot parameters for silent boot..."
@@ -180,7 +210,7 @@ force_drivers+=" amdgpu "
 EOF
 
     echo "🎨 Setting default Plymouth theme..."
-    plymouth-set-default-theme void10 -R
+    plymouth-set-default-theme "$THEME_NAME" -R
 
     echo "🔄 Rebuilding initramfs (full rebuild)..."
     dracut -f
@@ -213,7 +243,7 @@ show_menu() {
     echo "  1) Setup Disk Swap (BTRFS Swapfile)"
     echo "  2) Setup Snapper (Snapshots, GRUB, XBPS Wrapper)"
     echo "  3) Setup ZRAM (Compressed RAM Swap)"
-    echo "  4) Setup Plymouth (Boot Splash, void10 Theme, AMD KMS)"
+    echo "  4) Setup Plymouth (Theme Selector & AMD KMS)"
     echo "  5) Execute ALL Setup Steps (1, 2, 3, and 4)"
     echo "  6) Exit"
     echo "========================================================="
