@@ -152,7 +152,7 @@ setup_plymouth() {
     read -p "Select a theme [1-3]: " theme_choice
 
     case $theme_choice in
-        1) REPO_URL="https://github.com/David-Castro16/void10.git" ;;
+        1) REPO_URL="https://github.com/DiaFein/void-ply-themes.git" ;;
         2) REPO_URL="https://gitlab.com/ferrettim/void-plymouth-theme.git" ;;
         3) return 0 ;;
         *) echo "❌ Invalid choice."; return 1 ;;
