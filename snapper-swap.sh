@@ -1,6 +1,7 @@
 #!/bin/bash
 # ---------------------------------------------------------
-# Modular Void Linux Setup: BTRFS Swap, Snapper, ZRAM
+# Master Void Linux Performance & Recovery Toolkit
+# Includes: BTRFS Swap, Snapper, ZRAM, Plymouth (void10)
 # ---------------------------------------------------------
 
 # 0. Root Check
@@ -27,7 +28,7 @@ setup_swap() {
         echo "Creating a $SWAP_SIZE swapfile..."
         btrfs filesystem mkswapfile --size $SWAP_SIZE /swap/swapfile
         
-        echo "Setting strict permissions (chmod 600)..."
+        echo "Setting strict permissions..."
         chmod 600 /swap/swapfile
         
         echo "Enabling swap..."
@@ -39,7 +40,7 @@ setup_swap() {
         fi
         echo "✅ Swap configured safely and securely."
     else
-        echo "⚠️ Directory /swap already exists. Skipping swap creation to prevent overwrites."
+        echo "⚠️ Directory /swap already exists. Skipping swap creation."
     fi
 }
 
@@ -50,7 +51,7 @@ setup_snapper() {
     echo -e "\n📸 --- Configuring Snapper & Automation ---"
     
     echo "Installing dependencies..."
-    xbps-install -Suy snapper grub-btrfs inotify-tools cronie || { echo "❌ Failed to install dependencies"; return; }
+    xbps-install -Sy snapper grub-btrfs inotify-tools cronie || { echo "❌ Failed to install dependencies"; return 1; }
 
     if [ ! -f "/etc/snapper/configs/root" ]; then
         echo "Creating Snapper root config..."
@@ -70,7 +71,7 @@ setup_snapper() {
         sed -i 's/^NUMBER_LIMIT_IMPORTANT=.*/NUMBER_LIMIT_IMPORTANT="3"/' /etc/snapper/configs/root
         echo "✅ Snapper configured successfully."
     else
-        echo "⚠️ Snapper root config already exists. Skipping Snapper setup."
+        echo "⚠️ Snapper root config already exists. Skipping setup."
     fi
 
     echo "Generating GRUB configuration..."
@@ -94,7 +95,7 @@ snapper -c root cleanup number
 EOF
     chmod +x /etc/cron.weekly/snapper-cleanup
 
-    echo "Creating ultra-safe 'xbps-up' system-wide wrapper script..."
+    echo "Creating ultra-safe 'xbps-up' wrapper script..."
     cat << 'EOF' > /usr/local/bin/xbps-up
 #!/bin/sh
 if [ "$EUID" -ne 0 ]; then
@@ -110,7 +111,7 @@ xbps-install "$@"
 STATUS=$?
 
 if [ $STATUS -ne 0 ]; then
-    echo "❌ XBPS failed with status $STATUS. POST-snapshot skipped to preserve clean rollback state."
+    echo "❌ XBPS failed with status $STATUS. POST-snapshot skipped."
     exit $STATUS
 fi
 
@@ -127,7 +128,7 @@ EOF
 setup_zram() {
     echo -e "\n⚡ --- Configuring ZRAM ---"
     echo "Installing zramen..."
-    xbps-install -Suy zramen || { echo "❌ Failed to install zramen"; return; }
+    xbps-install -Sy zramen || { echo "❌ Failed to install zramen"; return 1; }
 
     echo "Enabling zramen service..."
     if [ ! -L /var/service/zramen ]; then
@@ -136,6 +137,65 @@ setup_zram() {
     else
         echo "⚠️ ZRAM service is already enabled."
     fi
+}
+
+# ==========================================
+# FUNCTION: 4. Setup Plymouth & void10 Theme
+# ==========================================
+setup_plymouth() {
+    echo -e "\n🎨 --- Configuring Plymouth & void10 Theme ---"
+
+    echo "📦 Installing Plymouth and Git..."
+    xbps-install -Sy plymouth git || { echo "❌ Failed to install plymouth/git"; return 1; }
+
+    if [ ! -d /usr/share/plymouth/themes/void10 ]; then
+        echo "⬇️ Cloning void10 Plymouth theme..."
+        cd /tmp || return 1
+        rm -rf void10
+        git clone --depth=1 https://github.com/David-Castro16/void10.git || { echo "❌ Failed to clone theme"; return 1; }
+
+        echo "📁 Installing theme..."
+        cp -r void10 /usr/share/plymouth/themes/
+    else
+        echo "✔️ Theme already installed, skipping clone."
+    fi
+
+    echo "⚙️ Configuring GRUB boot parameters for silent boot..."
+    SILENT_FLAGS="quiet splash loglevel=3 vt.global_cursor_default=0"
+    
+    # Optional: Uncomment the next line ONLY if using legacy GCN 1.0/2.0 AMD GPUs
+    # SILENT_FLAGS="$SILENT_FLAGS amdgpu.si_support=1 amdgpu.cik_support=1"
+
+    if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
+        # Safely strip existing instances of these flags to prevent duplicates, then append
+        sed -i 's/ quiet//g; s/ splash//g; s/ loglevel=[0-9]//g; s/ vt.global_cursor_default=[0-9]//g' /etc/default/grub
+        sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $SILENT_FLAGS\"/" /etc/default/grub
+    else
+        echo "GRUB_CMDLINE_LINUX_DEFAULT=\"$SILENT_FLAGS\"" >> /etc/default/grub
+    fi
+
+    # Cleanup extra spaces inside quotes caused by sed
+    sed -i 's/  / /g' /etc/default/grub
+
+    echo "⚙️ Enabling Plymouth in initramfs..."
+    mkdir -p /etc/dracut.conf.d
+    echo 'add_dracutmodules+=" plymouth "' > /etc/dracut.conf.d/plymouth.conf
+
+    echo "🎨 Setting default Plymouth theme..."
+    plymouth-set-default-theme void10
+
+    echo "🔄 Rebuilding initramfs..."
+    xbps-reconfigure -f linux
+
+    echo "🔄 Updating GRUB config..."
+    if grub-mkconfig -o /boot/grub/grub.cfg; then
+        echo "✔️ GRUB updated successfully."
+    else
+        echo "⚠️ GRUB update failed! Please check manually."
+        return 1
+    fi
+
+    echo "✅ Plymouth setup complete! Reboot to see the splash screen."
 }
 
 # ==========================================
@@ -149,40 +209,38 @@ show_menu() {
     echo "  1) Setup Disk Swap (BTRFS Swapfile)"
     echo "  2) Setup Snapper (Snapshots, GRUB, XBPS Wrapper)"
     echo "  3) Setup ZRAM (Compressed RAM Swap)"
-    echo "  4) Execute ALL Setup Steps (1, 2, and 3)"
-    echo "  5) Exit"
+    echo "  4) Setup Plymouth (Boot Splash, void10 Theme, Silent Boot)"
+    echo "  5) Execute ALL Setup Steps (1, 2, 3, and 4)"
+    echo "  6) Exit"
     echo "========================================================="
-    read -p "Select an option [1-5]: " choice
+    read -p "Select an option [1-6]: " choice
     
     case $choice in
-        1)
-            setup_swap
-            ;;
-        2)
-            setup_snapper
-            ;;
-        3)
-            setup_zram
-            ;;
-        4)
+        1) setup_swap ;;
+        2) setup_snapper ;;
+        3) setup_zram ;;
+        4) setup_plymouth ;;
+        5) 
             setup_swap
             setup_zram
             setup_snapper
+            setup_plymouth
             ;;
-        5)
+        6)
             echo "Exiting toolkit. Stay safe!"
             exit 0
             ;;
         *)
             echo "❌ Invalid option. Please try again."
             sleep 2
-            show_menu
             ;;
     esac
     
-    echo -e "\nPress [Enter] to return to the menu..."
-    read
-    show_menu
+    if [ "$choice" != "6" ]; then
+        echo -e "\nPress [Enter] to return to the menu..."
+        read -r
+        show_menu
+    fi
 }
 
 # Start the script
