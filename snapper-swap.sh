@@ -1,6 +1,6 @@
 #!/bin/bash
 # ---------------------------------------------------------
-# Master Void Linux Performance & Recovery Toolkit
+# Master Void Linux Performance & Recovery Toolkit v3.0
 # Includes: BTRFS Swap, Snapper, ZRAM, Plymouth (void10)
 # ---------------------------------------------------------
 
@@ -162,30 +162,28 @@ setup_plymouth() {
 
     echo "⚙️ Configuring GRUB boot parameters for silent boot..."
     SILENT_FLAGS="quiet splash loglevel=3 vt.global_cursor_default=0"
-    
-    # Optional: Uncomment the next line ONLY if using legacy GCN 1.0/2.0 AMD GPUs
-    # SILENT_FLAGS="$SILENT_FLAGS amdgpu.si_support=1 amdgpu.cik_support=1"
 
     if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
-        # Safely strip existing instances of these flags to prevent duplicates, then append
         sed -i 's/ quiet//g; s/ splash//g; s/ loglevel=[0-9]//g; s/ vt.global_cursor_default=[0-9]//g' /etc/default/grub
         sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $SILENT_FLAGS\"/" /etc/default/grub
     else
         echo "GRUB_CMDLINE_LINUX_DEFAULT=\"$SILENT_FLAGS\"" >> /etc/default/grub
     fi
 
-    # Cleanup extra spaces inside quotes caused by sed
     sed -i 's/  / /g' /etc/default/grub
 
-    echo "⚙️ Enabling Plymouth in initramfs..."
+    echo "⚙️ Enabling Plymouth and AMD Early KMS in dracut..."
     mkdir -p /etc/dracut.conf.d
-    echo 'add_dracutmodules+=" plymouth "' > /etc/dracut.conf.d/plymouth.conf
+    cat <<EOF > /etc/dracut.conf.d/plymouth.conf
+add_dracutmodules+=" plymouth "
+force_drivers+=" amdgpu "
+EOF
 
     echo "🎨 Setting default Plymouth theme..."
-    plymouth-set-default-theme void10
+    plymouth-set-default-theme void10 -R
 
-    echo "🔄 Rebuilding initramfs..."
-    xbps-reconfigure -f linux
+    echo "🔄 Rebuilding initramfs (full rebuild)..."
+    dracut -f
 
     echo "🔄 Updating GRUB config..."
     if grub-mkconfig -o /boot/grub/grub.cfg; then
@@ -194,6 +192,12 @@ setup_plymouth() {
         echo "⚠️ GRUB update failed! Please check manually."
         return 1
     fi
+
+    echo -e "\n🧪 Testing Plymouth output. You should see the splash screen for 3 seconds..."
+    plymouthd
+    plymouth --show-splash
+    sleep 3
+    plymouth --quit
 
     echo "✅ Plymouth setup complete! Reboot to see the splash screen."
 }
@@ -209,7 +213,7 @@ show_menu() {
     echo "  1) Setup Disk Swap (BTRFS Swapfile)"
     echo "  2) Setup Snapper (Snapshots, GRUB, XBPS Wrapper)"
     echo "  3) Setup ZRAM (Compressed RAM Swap)"
-    echo "  4) Setup Plymouth (Boot Splash, void10 Theme, Silent Boot)"
+    echo "  4) Setup Plymouth (Boot Splash, void10 Theme, AMD KMS)"
     echo "  5) Execute ALL Setup Steps (1, 2, 3, and 4)"
     echo "  6) Exit"
     echo "========================================================="
